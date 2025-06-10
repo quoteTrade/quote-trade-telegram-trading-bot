@@ -1,0 +1,744 @@
+import {fCurrency} from "./utils/format-number";
+
+require('dotenv').config();
+import TelegramBot from 'node-telegram-bot-api';
+import {
+  AuthErrorMessagesArray,
+  AvailableCommandsWithAuth,
+  AvailableAllCommands,
+  AvailableExamplesWithAuth,
+  AvailableAllExamples,
+  CommandPrice,
+  ExamplePrice,
+  CommandSetAuthKeys,
+  CommandAuthorization,
+  CommandBuy,
+  CommandSell,
+  CommandDeposit,
+  ProcessingRequestMessagesArray,
+  CommandGetPositions,
+  FullAuthErrorMessagesArray,
+  StakingInstructions,
+  StakingAuthorizationInstructions, CommandStaking, ExampleGetPositions, CommandWithdraw
+} from "./constant/message";
+import {BotSvc} from './bot.service';
+import {NetworkMap} from "./constant/block-chain-info";
+import {
+  DepositToken,
+  StakingOptions,
+  StakingOptionsMap,
+  StakingSymbols,
+  UnstakingSymbols,
+  WithdrawToken
+} from "./constant/utils";
+
+const authsMap: Map<string, any> = new Map();
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN as string, { polling: true });
+
+function supportOption(chatId: any) {
+  bot.sendMessage(chatId, 'If you need support, click the button below:', {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: `Help & Support ❓`, callback_data: 'support' },
+        ],
+        // [
+        //   { text: '📚 FAQ', url: 'https://t.me/your_support_username' },
+        // ],
+      ]
+    }
+  }).then(result => {});
+}
+
+bot.on('callback_query', (callbackQuery: any) => {
+  const action = callbackQuery.data;
+  const chatId = callbackQuery.message?.chat.id;
+  if (action === 'support') {
+    const MessagesArray = [
+      `🤖 *Welcome to [Quote.Trade](https://quote.trade) Bot!*`,
+    ];
+    // console.log(MessagesArray.join(``));
+    bot.sendMessage(
+        chatId,
+        `${MessagesArray.join(``)}`,
+        {parse_mode: "Markdown"}
+    ).then(r => {});
+  }
+});
+
+bot.onText(/\/start/, (msg: { chat: { id: any; }; }) => {
+  // bot.sendMessage(msg.chat.id, 'Welcome! Use /trade SYMBOL SIDE AMOUNT to place an order. (eg: BTC BUY 0.002)').then(r => {});
+  const MessagesArray = [
+      `🤖 *Welcome to [Quote.Trade](https://quote.trade) Bot!*  
+      I can help you manage your trades efficiently.\n\n`,
+      `*🔹Available Commands:*\n`,
+      `    ${AvailableAllCommands.join('\n    ')}`,
+      `\n\n`,
+      `💡 *Example Usage:*\n`,
+      `    ${AvailableAllExamples.join('\n    ')}`,
+      `\n\n`,
+      `Try it now! 🚀`,
+  ];
+  // console.log(MessagesArray.join(``));
+  bot.sendMessage(
+      msg.chat.id,
+      `${MessagesArray.join(``)}`,
+      {parse_mode: "Markdown"}
+  ).then(r => {});
+
+  // supportOption(msg.chat.id);
+});
+
+bot.onText(/\/set_trade_keys(?:\s(\S+)\s(\S+))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  const API_KEY = match[1];  // First captured value (API Key)
+  const API_SECRET = match[2];  // Second captured value (API Secret)
+
+  if (!API_KEY || !API_SECRET) {
+    await bot.sendMessage(chatId, '⚠️ Invalid command. \n\nUse: ' + CommandSetAuthKeys, { parse_mode: "Markdown" });
+    return;
+  }
+
+  const MessagesArray = [
+    `*🔹Available Commands:*\n`,
+    `    ${AvailableCommandsWithAuth.join('\n    ')}`,
+    `\n\n`,
+    `💡 *Example Usage:*\n`,
+    `    ${AvailableExamplesWithAuth.join('\n    ')}`,
+    `\n\n`,
+    `Try it now! 🚀`,
+  ];
+
+  const auth = {
+    // id: 0,
+    requestToken: API_KEY,
+    requestSecret: API_SECRET,
+  };
+
+  authsMap.set(chatId.toString(), auth);
+
+  bot.sendMessage(
+      msg.chat.id,
+      `${MessagesArray.join(``)}`,
+      {parse_mode: "Markdown"}
+  ).then(r => {});
+});
+
+bot.onText(/\/login(?:\s(\S+)\s(\S+))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  const WALLET_ADDRESS = match[1];  // First captured value (WALLET_ADDRESS)
+  const PRIVATE_KEY = match[2];  // Second captured value (PRIVATE_KEY)
+
+  if (!WALLET_ADDRESS || !PRIVATE_KEY) {
+    await bot.sendMessage(chatId, '⚠️ Invalid command. \n\nUse: ' + CommandAuthorization, { parse_mode: "Markdown" });
+    return;
+  }
+
+  const MessagesArray = [
+    `✅ *Successfully authenticated to [Quote.Trade] Bot!*  \n\n`,
+    `*🔹Available Commands:*\n`,
+    `    ${AvailableCommandsWithAuth.join('\n    ')}`,
+    `\n\n`,
+    `💡 *Example Usage:*\n`,
+    `    ${AvailableExamplesWithAuth.join('\n    ')}`,
+    `\n\n`,
+    `Try it now! 🚀`,
+  ];
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+
+    const auth = await BotSvc.authorization(WALLET_ADDRESS, PRIVATE_KEY);
+    // console.log(auth);
+    if (auth.id) {
+      auth.walletAddress = WALLET_ADDRESS;
+      auth.privateKey = PRIVATE_KEY;
+      authsMap.set(chatId.toString(), auth);
+      bot.sendMessage(
+          msg.chat.id,
+          `${MessagesArray.join(``)}`,
+          {parse_mode: "Markdown"}
+      ).then(r => {});
+    } else {
+      await bot.sendMessage(chatId, `❌ Failed to authenticate!, try again`);
+    }
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Failed: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/tickers(?:\s(\d+)\s(\d+))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  // console.log(match);
+  let skip = Number(match?.[1]) || 0;  // Default skip = 0
+  let limit = Number(match?.[2]) || 10; // Default limit = 10
+
+  if (limit > 10) {
+    await bot.sendMessage(chatId, "⚠️ Maximum limit is 10. Please use a value up to 10.").then();
+    return;
+  }
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+    let symbolsList: any = await BotSvc.getSymbolsList(skip, limit);
+
+    if (symbolsList.length <= 0) {
+      await bot.sendMessage(chatId, "⚠️ Not available symbols. Please try again later.").then();
+      return;
+    }
+
+    const MessagesArray = [
+      `📌 *Supported Symbols (Skip: ${skip}, Limit: ${limit}):*\n`,
+      `    ▪️${symbolsList.join('\n    ▪️')}`,
+      `\n\n`,
+      `🔹*Command:*\n`,
+      `    ${CommandPrice}\n\n`,
+      `💡*Example Usage:*\n`,
+      `    ${ExamplePrice}`,
+    ];
+
+    await bot.sendMessage(
+          msg.chat.id,
+          `${MessagesArray.join(``)}`,
+          { parse_mode: "Markdown" }
+    );
+
+    // await bot.sendMessage(chatId, `✅ The order has been successfully placed..`);
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Unable to fetch symbols: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/get_deposit_address/, async (msg: { chat: { id: any; }; }) => {
+  const chatId = msg.chat.id;
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+    let depositInfo: any = await BotSvc.getDepositAddress();
+    // console.log(depositInfo)
+
+    if (!depositInfo.address) {
+      await bot.sendMessage(chatId, "⚠️ Couldn't fetch deposit address. Please try again later.").then();
+      return;
+    }
+
+    const depositNetwork = process.env.DEPOSIT_BLOCKCHAIN_NETWORK as string;
+    const chainInfo: any = NetworkMap[depositNetwork] || {};
+
+
+    const MessagesArray = [
+      `💰 *Deposit Instructions* 💰\n\n`,
+      `You can deposit *USDC* or *USDT* on the *${chainInfo.name} network* using the address below:\n\n`,
+      `🔹 *Deposit Address:* \`${depositInfo.address}\`\n\n`,
+      `⚠️ *Important:*\n`,
+      `- Only send *USDC* or *USDT* (Ethereum ERC-20).\n`,
+      `- Sending any other asset may result in loss.\n`,
+      `- Ensure you send funds from a wallet you control.\n\n`,
+      `✅ Once deposited, your positions will update automatically after a few minutes.\n\n`,
+      `--or-- \n\n`,
+      `🔹 You can *auto-deposit* from your wallet using the following commands: \n\n`,
+      `1️⃣ First, authorize your wallet:\n`,
+      `${CommandAuthorization}\n\n`,
+      `2️⃣ Then, send the deposit amount: \n`,
+      `${CommandDeposit}\n\n`,
+      `If you have any questions, contact support.`,
+    ];
+
+
+
+    await bot.sendMessage(
+        msg.chat.id,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Error: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/deposit(?:\s(\S+)\s(\d+(\.\d+)?))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  if (!match) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandDeposit, { parse_mode: "Markdown" });
+
+  let depositToken = match[1]?.toUpperCase();
+  let depositAmount = Number(match[2]) || 0;
+  if (!depositToken || !depositAmount) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandDeposit, { parse_mode: "Markdown" });
+
+  const { walletAddress, privateKey } = authsMap.get(chatId.toString()) || {};
+  if (!walletAddress) {
+    return bot.sendMessage(
+        chatId,
+        `${FullAuthErrorMessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  }
+
+  if (!DepositToken.includes(depositToken)) {
+    return bot.sendMessage(chatId, '⚠️ Invalid deposit token.\n\nUse: ' + CommandDeposit, { parse_mode: "Markdown" });
+  }
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+
+    let depositInfo: any = await BotSvc.getDepositAddress();
+
+    if (!depositInfo.address) {
+      await bot.sendMessage(chatId, "⚠️ Couldn't fetch deposit address. Please try again later.").then();
+      return;
+    }
+
+    const depositNetwork = process.env.DEPOSIT_BLOCKCHAIN_NETWORK as string;
+    const chainInfo: any = NetworkMap[depositNetwork] || {};
+
+    const trxHash = await BotSvc.deposit(chainInfo, walletAddress, privateKey, depositToken, depositAmount, depositInfo.address);
+
+    const MessagesArray = [
+      `💰 *Amount Deposited:* \`${depositAmount} ${depositToken}\`\n\n`,
+      `🔹 *Transaction Hash:*\n`,
+      `\`${trxHash}\`\n\n`,
+      `Your positions will be updated shortly.\n\n`,
+      `📊 *To check your current positions, use:*\n`,
+      `${CommandGetPositions}`
+    ];
+    await bot.sendMessage(
+        chatId,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Failed: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/withdraw(?:\s(\S+)\s(\d+(\.\d+)?))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  if (!match) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandWithdraw, { parse_mode: "Markdown" });
+
+  let withdrawToken = match[1]?.toUpperCase();
+  let withdrawAmount = Number(match[2]) || 0;
+  if (!withdrawToken || !withdrawAmount) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandWithdraw, { parse_mode: "Markdown" });
+
+  const { id, requestToken, requestSecret, walletAddress } = authsMap.get(chatId.toString()) || {};
+
+  if (!walletAddress) {
+    return bot.sendMessage(
+        chatId,
+        `${FullAuthErrorMessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  }
+
+  if (!WithdrawToken.includes(withdrawToken)) {
+    return bot.sendMessage(chatId, '⚠️ Invalid deposit token.\n\nUse: ' + CommandWithdraw, { parse_mode: "Markdown" });
+  }
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+
+    await BotSvc.withdraw({
+      "token": withdrawToken,
+      "account": id,
+      "side": "BUY",
+      "quantity": withdrawAmount,
+      "toAddress": walletAddress,
+    }, { id, requestToken, requestSecret });
+
+    const MessagesArray = [
+      `✅ *The withdrawal request has been successfully sent*  \n\n`,
+      `▪️ * Symbol: ${withdrawToken}*\n`,
+      `▪️ * Quantity: ${withdrawAmount}*\n\n`,
+      `Your positions will be updated shortly.\n`,
+      `There may be a delay of up to 24 hours for withdrawals on new accounts.\n\n`,
+      `📊 *To check your current positions, use:*\n`,
+      `${CommandGetPositions}`
+    ];
+
+    await bot.sendMessage(
+        chatId,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Failed: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/get_positions/, async (msg: { chat: { id: any; }; }) => {
+  const chatId = msg.chat.id;
+
+  try {
+    const auth: any = authsMap.get(chatId.toString()) || {};
+    if (!auth.requestToken) {
+      return bot.sendMessage(
+          chatId,
+          `${AuthErrorMessagesArray.join(``)}`,
+          { parse_mode: "Markdown" }
+      );
+    }
+
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+
+    let positions: any = await BotSvc.getPositions(auth);
+    // console.log(positions)
+
+    if (positions.length <= 0) {
+      await bot.sendMessage(chatId, "⚠️ Not available symbols. Please try again later.").then();
+      return;
+    }
+
+    const MessagesArray = [
+      `📌 *Positions :* 💰\n\n`,
+    ];
+
+    (positions).forEach((item: any) => {
+      MessagesArray.push(
+          `▪️*${item.symbol}* \n*Size: ${item.quantity}* | *Value (USD): ${fCurrency(item.usdValue)}*\n`,
+      );
+    });
+
+
+
+    await bot.sendMessage(
+        msg.chat.id,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+
+    // await bot.sendMessage(chatId, `✅ The order has been successfully placed..`);
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Unable to fetch symbols: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/price(?:\s(\S+)\s(\d+(\.\d+)?))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+
+  let symbol = match[1]?.toUpperCase();
+  let quantity = Number(match[2]) || 0;
+
+  if (!symbol || !quantity) {
+    await bot.sendMessage(chatId, '⚠️ Invalid command. \n\nUse: ' + CommandPrice, { parse_mode: "Markdown" });
+    return;
+  }
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+    let matchingPrice: any = await BotSvc.getMatchingPrice(symbol, quantity);
+
+    let BuyingMessage = [
+      `ℹ️ *Buying : ${fCurrency(matchingPrice.ask.p)}*\n`,
+      `       *Total (x${quantity}) = ${fCurrency(matchingPrice.ask.p * quantity)}*`,
+      `\n\n`,
+      `🟩 *BUY NOW:*\n`,
+      `👉 \`/buy ${symbol} ${quantity} USDC\``,
+    ];
+    let SellingMessage = [
+      `ℹ️ *Selling : ${fCurrency(matchingPrice.bid.p)}*\n`,
+      `       *Total (x${quantity}) = ${fCurrency(matchingPrice.bid.p * quantity)}*`,
+      `\n\n`,
+      `🟥 *SELL NOW:*\n`,
+      `👉 \`/sell ${symbol} ${quantity} USDC\``,
+    ];
+
+    if (!matchingPrice?.ask?.p) {
+      BuyingMessage = [
+        `ℹ️ *Buying price is not matching for this quantity*`,
+      ];
+    }
+    if (!matchingPrice?.bid?.p) {
+      BuyingMessage = [
+        `ℹ️ *Selling price is not matching for this quantity*`,
+      ];
+    }
+
+    const MessagesArray = [
+      `📌 *Matching Price for ${symbol} (Quantity: ${quantity})*\n\n`,
+      `${BuyingMessage.join(``)}`,
+      `\n\n`,
+      `${SellingMessage.join(``)}`,
+      `\n\n`,
+      `🔹 *Check price again:*\n`,
+      `👉 \`/price ${symbol} ${quantity}\``
+    ];
+
+    await bot.sendMessage(
+          msg.chat.id,
+          `${MessagesArray.join(``)}`,
+          { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Error occurred, Please try again.`);
+  }
+});
+
+bot.onText(/\/buy(?:\s(\S+)\s(\d+(\.\d+)?))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  if (!match) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandBuy, { parse_mode: "Markdown" });
+
+  // console.log(match);
+  let symbol = match[1]?.toUpperCase();
+  let quantity = Number(match[2]) || 0;
+  // let quoteCurrency = match[4]?.toUpperCase();
+  let quoteCurrency = "USD";
+  if (!symbol || !quantity || !quoteCurrency) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandBuy, { parse_mode: "Markdown" });
+
+  const { id, requestToken, requestSecret } = authsMap.get(chatId.toString()) || {};
+  if (!requestToken) {
+    return bot.sendMessage(
+        chatId,
+        `${AuthErrorMessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  }
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+    await BotSvc.placeOrder({
+      "symbol": symbol,
+      "side": "BUY",
+      "quantity": quantity,
+      // "price": parseFloat(price),
+      "type": "MARKET",
+      "paymentCurrency": quoteCurrency
+    }, { id, requestToken, requestSecret });
+    const MessagesArray = [
+      `✅ *The buy order has been successfully placed*  \n\n`,
+      `▪️ * Symbol: ${symbol}*\n`,
+      `▪️ * Quantity: ${quantity}*`,
+    ];
+    await bot.sendMessage(
+        chatId,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Buy Failed: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/sell(?:\s(\S+)\s(\d+(\.\d+)?))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  if (!match) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandSell, { parse_mode: "Markdown" });
+
+  let symbol = match[1]?.toUpperCase();
+  let quantity = Number(match[2]) || 0;
+  // let quoteCurrency = match[4]?.toUpperCase();
+  let quoteCurrency = "USD";
+  if (!symbol || !quantity ||!quoteCurrency) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandSell, { parse_mode: "Markdown" });
+
+  const { id, requestToken, requestSecret } = authsMap.get(chatId.toString()) || {};
+  if (!requestToken) {
+    return bot.sendMessage(
+        msg.chat.id,
+        `${AuthErrorMessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  }
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+    await BotSvc.placeOrder({
+      "symbol": symbol,
+      "side": "SELL",
+      "quantity": quantity,
+      // "price": parseFloat(price),
+      "type": "MARKET",
+      "paymentCurrency": quoteCurrency
+    }, { id, requestToken, requestSecret });
+    const MessagesArray = [
+      `✅ *The sell order has been successfully placed*  \n\n`,
+      `▪️ * Symbol: ${symbol}*\n`,
+      `▪️ * Quantity: ${quantity}*`,
+    ];
+    await bot.sendMessage(
+        chatId,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Sell Failed: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/staking/, async (msg: { chat: { id: any; }; }) => {
+  const chatId = msg.chat.id;
+
+  try {
+    let MessagesArray = [
+      `📌 *Staking Instructions*`,
+      `\n\n`,
+    ];
+    const { requestToken } = authsMap.get(chatId.toString()) || {};
+    if (!requestToken) {
+      MessagesArray.push(...StakingAuthorizationInstructions);
+    }
+    MessagesArray.push(...StakingInstructions);
+
+    await bot.sendMessage(
+        msg.chat.id,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Error: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/stake(?:\s(\S+)\s(\S+)\s(\d+(\.\d+)?))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  if (!match) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandStaking, { parse_mode: "Markdown" });
+
+  let option = match[1];
+  let symbol = match[2]?.toUpperCase();
+  let quantity = Number(match[3]) || 0;
+  if (!option || !symbol || !quantity) {
+    return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandStaking, { parse_mode: "Markdown" });
+  }
+
+  const { id, requestToken, requestSecret } = authsMap.get(chatId.toString()) || {};
+  if (!requestToken) {
+    return bot.sendMessage(
+        msg.chat.id,
+        `${AuthErrorMessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  }
+
+  if (!StakingOptions.includes(option)) {
+    return bot.sendMessage(chatId, '⚠️ Invalid Staking Option.\n\nUse: ' + CommandStaking, { parse_mode: "Markdown" });
+  }
+  if (!StakingSymbols.includes(symbol)) {
+    return bot.sendMessage(chatId, '⚠️ Invalid Staking Symbol.\n\nUse: ' + CommandStaking, { parse_mode: "Markdown" });
+  }
+
+  const optionId: number = StakingOptionsMap[option].value;
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+
+    await BotSvc.placeOrder({
+      "symbol": symbol,
+      "side": "BUY",
+      "quantity": quantity,
+      // "price": parseFloat(price),
+      "type": "MARKET",
+      "stake": 1,
+      "stakeOption": optionId,
+    }, { id, requestToken, requestSecret });
+    const MessagesArray = [
+      `✅ *The Staking has been successfully placed*  \n\n`,
+      `▪️ * Option: ${option}*\n`,
+      `▪️ * Symbol: ${symbol}*\n`,
+      `▪️ * Quantity: ${quantity}*\n\n`,
+      `Your positions will be updated.\n`,
+      `📊 *To check your current positions, use:*\n`,
+      `  ${ExampleGetPositions}`
+    ];
+    await bot.sendMessage(
+        chatId,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Sell Failed: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/un_stake(?:\s(\S+)\s(\d+(\.\d+)?))?/, async (msg: { chat: { id: any; }; }, match: any) => {
+  const chatId = msg.chat.id;
+  if (!match) return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandStaking, { parse_mode: "Markdown" });
+
+  let symbol = match[1]?.toUpperCase();
+  let quantity = Number(match[2]) || 0;
+  if (!symbol || !quantity) {
+    return bot.sendMessage(chatId, '⚠️ Invalid command.\n\nUse: ' + CommandStaking, { parse_mode: "Markdown" });
+  }
+
+  const { id, requestToken, requestSecret } = authsMap.get(chatId.toString()) || {};
+  if (!requestToken) {
+    return bot.sendMessage(
+        msg.chat.id,
+        `${AuthErrorMessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  }
+
+  if (UnstakingSymbols.includes(symbol)) {
+    return bot.sendMessage(chatId, '⚠️ Invalid Staking Symbol.\n\nUse: ' + CommandStaking, { parse_mode: "Markdown" });
+  }
+
+  try {
+    bot.sendMessage(chatId, `${ProcessingRequestMessagesArray.join(``)}`, { parse_mode: "Markdown" }).then();
+
+    await BotSvc.placeOrder({
+      "symbol": symbol,
+      "side": "SELL",
+      "quantity": quantity,
+      // "price": parseFloat(price),
+      "type": "MARKET",
+      "stake": 1,
+    }, { id, requestToken, requestSecret });
+    const MessagesArray = [
+      `✅ *The Unstaking has been successfully placed*  \n\n`,
+      `▪️ * Symbol: ${symbol}*\n`,
+      `▪️ * Quantity: ${quantity}*\n\n`,
+      `Your positions will be updated.\n`,
+      `📊 *To check your current positions, use:*\n`,
+      `  ${ExampleGetPositions}`
+    ];
+    await bot.sendMessage(
+        chatId,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Sell Failed: ${error.error || error.message}`);
+  }
+});
+
+bot.onText(/\/remove_authorization/, async (msg: { chat: { id: any; }; }) => {
+  const chatId = msg.chat.id;
+
+  let title = '🚫 *Authorization Removed*';
+  let title2 = 'Your trading authorization has been successfully revoked. You can no longer place trades, deposit, or stake funds.';
+  try {
+    if (!authsMap.has(chatId.toString())) {
+      title = '⚠️ *Authorization Already Removed*';
+      title2 = 'You have already revoked your trading authorization. No further action is required.';
+    }
+    authsMap.delete(chatId.toString());
+
+    const MessagesArray = [
+      `${title}\n\n`,
+      `${title2}\n\n`,
+      `🔹 *To Reauthorize:*\n`,
+      `- Use ${CommandSetAuthKeys} \n`,
+      `- Or use ${CommandAuthorization}`,
+      `\n\n`,
+      `🔄 If you wish to trade again, please reauthorize using the commands above.`,
+    ];
+
+    await bot.sendMessage(
+        msg.chat.id,
+        `${MessagesArray.join(``)}`,
+        { parse_mode: "Markdown" }
+    );
+  } catch (error: any) {
+    console.error(error);
+    await bot.sendMessage(chatId, `❌ Error: ${error.error || error.message}`);
+  }
+});
+
+console.log('🤖 Telegram Bot is running...');

@@ -1,4 +1,4 @@
-# Telegram Quote Trade Bot
+# Quote Trade Telegram Bot With Client API
 This is a **Node.js & TypeScript** Telegram bot that allows users to trade directly from Telegram.
 
 ## 🚀 Features

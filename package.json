@@ -1,0 +1,27 @@
+{
+  "name": "quote-trade-telegram-trading-bot",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "Quote.Trade Telegram trading bot using Node.js and TypeScript",
+  "main": "dist/bot.js",
+  "scripts": {
+    "dev": "ts-node src/bot.ts",
+    "build": "tsc",
+    "start": "node dist/bot.js"
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "dotenv": "^16.0.3",
+    "ethers": "^6.13.5",
+    "node-telegram-bot-api": "^0.61.0",
+    "numeral": "^2.0.6",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/node-telegram-bot-api": "^0.64.7",
+    "@types/numeral": "^2.0.5",
+    "@types/ws": "^8.18.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2"
+  }
+}

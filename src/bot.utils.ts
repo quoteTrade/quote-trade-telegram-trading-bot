@@ -74,8 +74,8 @@ export async function sendUnauthorizedMessage(bot: any, chatId: any) {
       `${MessagesArray.join(``)}`, {
         reply_markup: {
           inline_keyboard: [
-              [inline_keyboard_for_set_trade_keys, inline_keyboard_for_login_wallet],
-              [inline_keyboard_for_back_main_menu]
+            [inline_keyboard_for_set_trade_keys, inline_keyboard_for_login_wallet],
+            [inline_keyboard_for_back_main_menu]
           ]
         },
         parse_mode: "MarkdownV2",
@@ -142,8 +142,8 @@ export async function sendSetTradeKeysInstructions(bot: any, chatId: any) {
         `${MessagesArray.join(``)}`, {
           reply_markup: {
             inline_keyboard: [
-                [ inline_keyboard_for_set_trade_keys_wizard ],
-                [ inline_keyboard_for_back_main_menu ]
+              [ inline_keyboard_for_set_trade_keys_wizard ],
+              [ inline_keyboard_for_back_main_menu ]
             ]
           },
           parse_mode: "MarkdownV2",
@@ -314,7 +314,7 @@ export async function sendAvailablePositions(bot: any, chatId: any): Promise<voi
         `${MessagesArray.join(``)}`, {
           reply_markup: {
             inline_keyboard: [
-                [inline_keyboard_for_back_main_menu]
+              [inline_keyboard_for_back_main_menu]
             ]
           },
           parse_mode: "MarkdownV2",
@@ -379,8 +379,8 @@ export async function sendDepositFundsInstructions(bot: any, chatId: any): Promi
         `${MessagesArray.join(``)}`, {
           reply_markup: {
             inline_keyboard: [
-                inline_keyboard,
-                [inline_keyboard_for_back_main_menu],
+              inline_keyboard,
+              [inline_keyboard_for_back_main_menu],
             ]
           },
           parse_mode: "MarkdownV2",
@@ -624,8 +624,8 @@ export async function checkPrice(bot: any, chatId: any, symbol: string, quantity
     }
 
     const inline_keyboard_btn = [
-        { text: `🔄 Refresh Price for ${quantity} ${symbol}`, callback_data: `refresh_price|${symbol}|${quantity}` },
-        inline_keyboard_price_trade
+      { text: `🔄 Refresh Price for ${quantity} ${symbol}`, callback_data: `refresh_price|${symbol}|${quantity}` },
+      inline_keyboard_price_trade
     ];
 
     const MessagesArray = [
@@ -688,7 +688,7 @@ export async function buy(bot: any, chatId: any, symbol: string, quantity: numbe
     }, auth);
 
     const MessagesArray = [
-      `🎯 *Trade Confirmed!*  \n\n`,
+      `🎯 *Trade Submitted!*  \n\n`,
       `💠 *Symbol:* ${escapeAllMarkdownV2(symbol)}\n`,
       `📈 *Quantity:* ${quantity}\n`,
       `\n\n`,
@@ -734,7 +734,7 @@ export async function sell(bot: any, chatId: any, symbol: string, quantity: numb
     }, auth);
 
     const MessagesArray = [
-      `🎯 *Trade Confirmed!*  \n\n`,
+      `🎯 *Trade Submitted!*  \n\n`,
       `💠 *Symbol:* ${escapeAllMarkdownV2(symbol)}\n`,
       `📈 *Quantity:* ${quantity}\n`,
       `\n\n`,

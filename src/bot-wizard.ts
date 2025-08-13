@@ -463,8 +463,17 @@ export async function stakeUnstakeWizard(bot: any, chatId: any) {
                 { text: '💰 Stake - USDC', callback_data: 'stake_wizard_step1|USDC' },
                 { text: '💰 Stake - USDT', callback_data: 'stake_wizard_step1|USDT' }
               ],
-              [{ text: '💰 Un-stake - STAKE_USDC_24H', callback_data: 'unstake_wizard_step1|STAKE_USDC_24H' }],
-              [{ text: '💰 Un-stake - STAKE_USDT_24H', callback_data: 'unstake_wizard_step1|STAKE_USDT_24H' }],
+              [{ text: '💰 Un-stake - STAKE_USDC_24H', callback_data: 'unstake_wizard_step1|STAKE_USDC_24H' },],
+              [ { text: '💰 Un-stake - STAKE_USDT_24H', callback_data: 'unstake_wizard_step1|STAKE_USDT_24H' }],
+
+              [{ text: '💰 Un-stake - STAKE_USDC_6M', callback_data: 'unstake_wizard_step1|STAKE_USDC_6M' },],
+              [ { text: '💰 Un-stake - STAKE_USDT_6M', callback_data: 'unstake_wizard_step1|STAKE_USDT_6M' }],
+
+              [{ text: '💰 Un-stake - STAKE_USDC_12M', callback_data: 'unstake_wizard_step1|STAKE_USDC_12M' },],
+              [{ text: '💰 Un-stake - STAKE_USDT_12M', callback_data: 'unstake_wizard_step1|STAKE_USDT_12M' }],
+
+              [{ text: '💰 Un-stake - STAKE_USDC_18M', callback_data: 'unstake_wizard_step1|STAKE_USDC_18M' },],
+              [{ text: '💰 Un-stake - STAKE_USDT_18M', callback_data: 'unstake_wizard_step1|STAKE_USDT_18M' }],
               [inline_keyboard_exit_wizard]
             ]
           },
@@ -499,6 +508,9 @@ export async function stakeWizardStep1(bot: any, chatId: any, symbol: string) {
           reply_markup: {
             inline_keyboard: [
               [{ text: '👉 24_HOUR', callback_data: `stake_wizard_step2|${symbol}|24_HOUR` }],
+              [{ text: '👉 06_MONTH', callback_data: `stake_wizard_step2|${symbol}|06_MONTH` }],
+              [{ text: '👉 12_MONTH', callback_data: `stake_wizard_step2|${symbol}|12_MONTH` }],
+              [{ text: '👉 18_MONTH', callback_data: `stake_wizard_step2|${symbol}|18_MONTH` }],
               [inline_keyboard_exit_wizard]
             ]
           },

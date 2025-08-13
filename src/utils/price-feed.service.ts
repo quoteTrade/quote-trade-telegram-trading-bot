@@ -1,117 +1,111 @@
 import WebSocket from "ws";
 
+type Sub = {
+  resolve: (v: any) => void;
+  reject: (err?: any) => void;
+};
+
 export class PriceFeedService {
-  private readonly ws: WebSocket;
+  private ws?: WebSocket;
+  private readonly url: string = String(process.env.LIQUIDITY_WS_URL);
   private maxReconnectAttempts = 10;
   private reconnectAttempts = 0;
-  private reconnectInterval = 5000; // 5 seconds
-  private subscriptions: Map<string, any> = new Map();
-  private pendingRequests: Map<string, Promise<any>> = new Map();
+  private reconnectInterval = 5000; // ms
+
+  // queued/active per symbol until resolved
+  private subscriptions = new Map<string, Sub>();
+  // de-dup in-flight requests
+  private inFlight = new Map<string, Promise<any>>();
 
   constructor() {
-    this.ws = new WebSocket(`${process.env.LIQUIDITY_WS_URL}`);
-    this.connect();
+    this.initSocket();
   }
 
-  private connect() {
-    this.ws.onopen = () => {
-      console.log('✅ Price Feed WebSocket connected...');
-    };
+  private initSocket() {
+    this.ws = new WebSocket(this.url);
 
-    this.ws.onmessage = (message: any) => {
-      // console.log('Message received:', message.data);
-      try {
-        this.handleIncomingData(message.data);
-      } catch (e) {
-        console.error('❌ Price Feed WebSocket message error:', e);
+    this.ws.on("open", () => {
+      this.reconnectAttempts = 0;
+      console.log("✅ Price Feed WebSocket connected...");
+      // (Re)subscribe any queued symbols
+      for (const sym of this.subscriptions.keys()) {
+        this.sendSubscribe(sym);
       }
-    };
+    });
 
-    this.ws.onclose = () => {
-      console.log('❌ Price Feed WebSocket closed...');
-      this.handleReconnect();
-    };
+    this.ws.on("message", (raw) => {
+      try {
+        const text = typeof raw === "string" ? raw : raw.toString("utf8");
+        this.handleIncomingData(text);
+      } catch (e) {
+        console.error("❌ Price Feed WebSocket message error:", e);
+      }
+    });
 
-    this.ws.onerror = (error: any) => {
-      console.error('❌ Price Feed WebSocket error:', error);
-    };
+    this.ws.on("close", () => {
+      console.log("❌ Price Feed WebSocket closed...");
+      this.scheduleReconnect();
+    });
+
+    this.ws.on("error", (err) => {
+      console.error("❌ Price Feed WebSocket error:", err);
+    });
   }
 
-  private handleReconnect() {
-    if (this.reconnectAttempts < this.maxReconnectAttempts) {
-      this.reconnectAttempts += 1;
-      console.log(`📡 Reconnecting in ${this.reconnectInterval / 1000}s...`);
-      setTimeout(() => this.connect(), this.reconnectInterval);
-    } else {
-      console.error('🚫 Price Feed: Max reconnect attempts reached...');
+  private scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error("🚫 Price Feed: Max reconnect attempts reached...");
+      // Optional: reject all pending subs
+      // for (const [, { reject }] of this.subscriptions) reject(new Error("socket closed"));
+      return;
     }
+    this.reconnectAttempts += 1;
+    console.log(`📡 Reconnecting in ${this.reconnectInterval / 1000}s...`);
+    setTimeout(() => this.initSocket(), this.reconnectInterval);
   }
 
   // Handle incoming WebSocket messages
-  private handleIncomingData(data: any) {
-    try {
-      const { s, bids, asks } = JSON.parse(data);
+  private handleIncomingData(json: string) {
+    const payload = JSON.parse(json);
+    const { s: symbol, bids, asks } = payload || {};
 
-      if (bids && asks && this.subscriptions.has(s)) {
-        const { resolve } = this.subscriptions.get(s);
-        if (resolve) {
-          this.subscriptions.delete(s); // Remove after use
-          this.unsubscribe(s); // Unsubscribe if no longer needed
-          resolve({bids, asks});
-        }
-      }
-    } catch (e) {
-      console.error('❌ Price Feed WebSocket message error:', e);
+    if (!symbol || !this.subscriptions.has(symbol)) return;
+
+    if (Array.isArray(bids) && Array.isArray(asks)) {
+      const { resolve } = this.subscriptions.get(symbol)!;
+      this.subscriptions.delete(symbol);
+      this.inFlight.delete(symbol);
+      this.sendUnsubscribe(symbol);
+      resolve({ bids, asks });
     }
   }
 
   // Subscribe to a symbol
-  private subscribe(symbol: string) {
+  private sendSubscribe(symbol: string) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        "symbol": symbol,
-        "unsubscribe": 0
-      }));
-      console.log(`📡 Price Feed: Subscribed to ${symbol}`);
-    } else {
-      if (this.subscriptions.has(symbol)) {
-        const { reject } = this.subscriptions.get(symbol);
-        if (reject) {
-          this.subscriptions.delete(symbol);
-          this.pendingRequests.delete(symbol);
-          reject();
-        }
-      }
-      console.warn('❌ Cannot send message: Price Feed WebSocket is not open');
+      this.ws.send(JSON.stringify({ symbol, unsubscribe: 0 }));
+      // console.log(`📡 Subscribed to ${symbol}`);
     }
   }
 
-  // Unsubscribe from a symbol
-  private unsubscribe(symbol: string) {
+  private sendUnsubscribe(symbol: string) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        "symbol": symbol,
-        "unsubscribe": 1
-      }));
-      this.subscriptions.delete(symbol);
-      console.log(`🚫 Price Feed: Unsubscribed from ${symbol}`);
-    } else {
-      console.warn('❌ Cannot send message: Price Feed WebSocket is not open');
+      this.ws.send(JSON.stringify({ symbol, unsubscribe: 1 }));
+      // console.log(`🚫 Unsubscribed from ${symbol}`);
     }
   }
 
   public async getPrices(symbol: string): Promise<any> {
-    if (this.pendingRequests.has(symbol)) {
-      return this.pendingRequests.get(symbol)!; // Return existing promise
-    }
+    if (this.inFlight.has(symbol)) return this.inFlight.get(symbol)!;
 
-    const pricePromise = new Promise<any>((resolve, reject) => {
-      this.subscriptions.set(symbol, {resolve, reject});
-      this.subscribe(symbol);
+    const p = new Promise<any>((resolve, reject) => {
+      this.subscriptions.set(symbol, { resolve, reject });
+      // subscribe now if socket is open; otherwise it will subscribe on 'open'
+      this.sendSubscribe(symbol);
     });
 
-    this.pendingRequests.set(symbol, pricePromise);
-    return pricePromise;
+    this.inFlight.set(symbol, p);
+    return p;
   }
 
   public fetchMaxMatchingPrices(orderBook: any, quantity: number): any {
@@ -119,7 +113,7 @@ export class PriceFeedService {
     const bid = orderBook.bids?.find((bid: any) => bid.q >= quantity) || {};
     const ask = orderBook.asks?.find((ask: any) => ask.q >= quantity) || {};
 
-    return { bid, ask };
+    return { s: orderBook.s, bid, ask };
   }
 
 }

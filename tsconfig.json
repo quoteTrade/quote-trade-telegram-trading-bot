@@ -1,9 +1,1 @@
-{
-  "compilerOptions": {
-    "outDir": "dist",
-    "module": "CommonJS",
-    "target": "ES6",
-    "strict": true,
-    "esModuleInterop": true
-  }
-}
+{ "compilerOptions": { "outDir":"dist", "module":"CommonJS", "target":"ES2020", "strict": false, "esModuleInterop": true, "skipLibCheck": true, "moduleResolution":"node" }, "include":["src/**/*.ts"] }

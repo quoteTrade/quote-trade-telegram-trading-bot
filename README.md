@@ -1,76 +1,47 @@
-# Quote Trade Telegram Bot With Client API
-This is a **Node.js & TypeScript** Telegram bot that allows users to trade directly from Telegram.
+# Quote.Trade Telegram Bot — Local Trigger Orders
 
-## 🚀 Features
+This branch adds Telegram-managed local triggers. The bot stores triggers in `.quote-trade/triggers.json`, watches Quote.Trade market/account data locally, and submits ordinary Quote.Trade orders through the existing order submission path when a trigger fires.
 
-- Place trade orders using simple commands.
-- Get real-time price updates.
-- Fetch a list of supported trading symbols.
+The Quote.Trade API order format is unchanged. The bot must be running for local triggers to fire.
 
-## 📌 Prerequisites
+## Build and test
 
-- Install **Node.js** (v18+ recommended)
-- Install **npm** or **yarn**
-- Get a **Telegram Bot Token** from [BotFather](https://t.me/BotFather)
-
-## 🔧 Installation
-
-Clone the repository and install dependencies:
-
-```sh
-git clone https://github.com/quoteTrade/quote-trade-telegram-trading-bot.git
-cd quote-trade-telegram-trading-bot
+```bash
 npm install
-```
-
-## Installation
-```sh
-npm install
-```
-
-## ⚙️ Configuration
-
-Create a `.env` file from `sample.env` and add your bot token:
-
-```sh
-TELEGRAM_BOT_TOKEN=your-telegram-bot-token
-API_BASE_URL=https://your-api-url.com
-LIQUIDITY_WS_URL=wss://your-api-url.com
-```
-
-## 🚀 Running the Bot
-
-To build and start the bot, use:
-
-```sh
 npm run build
-npm start
+npm test
 ```
 
-## 🎮 Quick Demo
+## Commands
 
-Start using the bot on Telegram: 👉 [Development Bot](https://t.me/Quote_Trade_bot) 
-## 📝 Commands
-
-- **Start Bot:** `/start`
-
-## 🤖 WebSocket Price Feed
-
-This bot fetches real-time price updates from the backend WebSocket. When a user requests a price, it subscribes to the WebSocket and sends the latest price back to the user.
-
-## 📌 Notes
-
-- Maximum **10 symbols** per request for `/symbols`.
-- Make sure your backend API is running and accessible.
-
-## 🛠️ Development
-
-For development mode with hot-reloading:
-
-```sh
-npm run dev
+```text
+/start
+/limit BTC BUY 60000 0.01
+/stoplimit BTC SELL 58000 57950 0.01
+/takeprofit BTC SELL 65000 close
+/stoploss BTC SELL 58000 close
+/trailingstop BTC SELL 5% close
+/trailingstoplimit BTC SELL 5% 50 close
+/oco BTC SELL 65000 58000 close
+/bracket BTC BUY 60000 0.01 65000 58000
+/scaleout BTC SELL 63000 25%
+/breakeven BTC SELL 3% 0.5%
+/closeafter BTC 4h
+/closeat BTC 2026-05-14T12:00:00+02:00
+/cancelafter <trigger-id> 30m
+/priceband BTC BUY BREAKOUT 65000 0.01
+/riskguard BTC MAX_RISK_USD 500 CLOSE_POSITION
+/triggers
+/triggers all
+/canceltrigger <trigger-id>
+/positions
+/risk
 ```
 
-## 📄 License
+Quantity arguments can be a fixed quantity, `close`, or a percent such as `25%` where supported. `close` resolves the side and size from cached positions at trigger time.
 
-This project is licensed under the MIT License.
+Direction is side-aware. BUY limits fire at or below the trigger price. SELL limits fire at or above it. BUY stop-style triggers fire upward. SELL stop-style triggers fire downward. OCO sibling cancellation and bracket exits are managed locally.
+
+Positions are cached in `.quote-trade/positions.json` and refreshed from listen-key account events plus optional API refreshes via `POSITIONS_ENDPOINT`.
+
+Set `MODE=paper` to log orders only, or `MODE=real` to post orders to Quote.Trade through the unchanged `/order` flow.

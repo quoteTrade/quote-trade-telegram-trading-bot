@@ -41,6 +41,19 @@ export class PriceFeedService {
           if (!quote) return;
           if (minIntervalMs > 0 && quote.ts - lastEmitAt < minIntervalMs) return;
           lastEmitAt = quote.ts;
+
+          if (process.env.TRIGGER_DEBUG === "true") {
+            console.log("[PRICE_TICK]", {
+              symbol: quote.symbol,
+              bid: quote.bid,
+              ask: quote.ask,
+              mid: quote.mid,
+              last: quote.last,
+              price: quote.price,
+              ts: quote.ts,
+            });
+          }
+
           onPrice(quote);
         } catch {
           // Ignore malformed market-data frames.

@@ -73,7 +73,29 @@ export class TriggerEngine {
         continue;
       }
 
-      if (shouldTrigger(current, price)) await this.fire(current, price);
+      const matched = shouldTrigger(current, price);
+
+      if (process.env.TRIGGER_DEBUG === "true") {
+        console.log("[TRIGGER_CHECK]", {
+          id: current.id,
+          kind: current.kind,
+          symbol: current.symbol,
+          side: current.side,
+          triggerSource: current.triggerSource,
+          selectedPrice: price,
+          triggerPrice: current.triggerPrice,
+          limitPrice: current.limitPrice,
+          bid: tick.bid,
+          ask: tick.ask,
+          mid: tick.mid,
+          last: tick.last,
+          mark: tick.mark,
+          matched,
+        });
+      }
+
+      if (matched) await this.fire(current, price);
+      // if (shouldTrigger(current, price)) await this.fire(current, price);
     }
   }
 
@@ -164,7 +186,26 @@ export class TriggerEngine {
         dynamicPatch = { lowWaterMark, currentStopPrice: lowWaterMark + distance };
       }
       const moved = patchChanges(trigger, dynamicPatch);
-      return this.store.update(trigger.id, { ...dynamicPatch, lastPrice: price }, { persist: moved }) ?? trigger;
+      const updated = this.store.update(trigger.id, { ...dynamicPatch, lastPrice: price }, { persist: moved }) ?? trigger;
+
+      if (process.env.TRIGGER_DEBUG === "true") {
+        console.log("[TRAILING_UPDATE]", {
+          id: updated.id,
+          kind: updated.kind,
+          symbol: updated.symbol,
+          side: updated.side,
+          triggerSource: updated.triggerSource,
+          selectedPrice: price,
+          highWaterMark: updated.highWaterMark,
+          lowWaterMark: updated.lowWaterMark,
+          currentStopPrice: updated.currentStopPrice,
+          trailMode: updated.trailMode,
+          trailValue: updated.trailValue,
+          moved,
+        });
+      }
+
+      return updated;
     }
 
     if (trigger.kind === "BREAK_EVEN_STOP") {
@@ -238,7 +279,26 @@ export class TriggerEngine {
       }
 
       this.store.update(latest.id, { firedAt: Date.now(), lastPrice: marketPrice });
+      if (process.env.TRIGGER_DEBUG === "true") {
+        console.log("[TRIGGER_FIRE_SUBMIT_ORDER]", {
+          triggerId: latest.id,
+          kind: latest.kind,
+          symbol: latest.symbol,
+          side: latest.side,
+          triggerSource: latest.triggerSource,
+          marketPrice,
+          order,
+        });
+      }
       const result = await this.executor.submitOrder(order);
+
+      if (process.env.TRIGGER_DEBUG === "true") {
+        console.log("[TRIGGER_ORDER_RESULT]", {
+          triggerId: latest.id,
+          result,
+        });
+      }
+
       const fired = this.store.setStatus(latest.id, "TRIGGERED", {
         orderId: result.orderId,
         clientOrderId: result.clientOrderId,

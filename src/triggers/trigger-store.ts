@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   assertNonNegativeNumber,
@@ -71,8 +71,9 @@ function readJsonFile<T>(filePath: string, fallback: T): T {
 function writeJsonFile(filePath: string, data: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2));
+  writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   renameSync(tmp, filePath);
+  try { chmodSync(filePath, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
 }
 
 function hasChanged(current: TriggerOrder, patch: Partial<TriggerOrder>): boolean {
@@ -81,6 +82,27 @@ function hasChanged(current: TriggerOrder, patch: Partial<TriggerOrder>): boolea
 
 function isOrderSubmittingKind(kind: TriggerKind): boolean {
   return kind !== "TIME_CANCEL";
+}
+
+function needsL2MarketData(trigger: TriggerOrder): boolean {
+  if (trigger.kind === "TIME_CANCEL") return false;
+  if (trigger.kind === "RISK_GUARD") {
+    return trigger.riskAction === "CLOSE_POSITION" || trigger.riskMetric === "MAX_RISK_USD" || trigger.riskMetric === "MAX_LOSS_USD";
+  }
+  return true;
+}
+
+function isPendingBracketEntry(trigger: TriggerOrder): boolean {
+  return trigger.status === "TRIGGERED" && !!trigger.meta?.bracket && !!trigger.meta?.bracketEntrySubmittedAt && !trigger.meta?.bracketChildrenCreated;
+}
+
+function needsAccountData(trigger: TriggerOrder): boolean {
+  if (isPendingBracketEntry(trigger)) return true;
+  if (trigger.status !== "ACTIVE") return false;
+  if (trigger.closePosition || trigger.closePercentage !== undefined) return true;
+  if (trigger.kind === "BREAK_EVEN_STOP" || trigger.kind === "TIME_CLOSE" || trigger.kind === "RISK_GUARD") return true;
+  if (trigger.meta?.bracket) return true;
+  return false;
 }
 
 function normalizeRiskMetric(metric: unknown): RiskMetric {
@@ -108,7 +130,14 @@ export class TriggerStore {
     const data = readJsonFile<TriggerOrder[]>(this.filePath, []);
     this.triggers.clear();
     for (const trigger of Array.isArray(data) ? data : []) {
-      if (trigger?.id) this.triggers.set(trigger.id, { ...trigger, triggerSource: trigger.triggerSource ?? "last" });
+      if (!trigger?.id) continue;
+      const migrated: any = {
+        ...trigger,
+        triggerSource: "side",
+        lastCheckedPrice: (trigger as any).lastCheckedPrice ?? (trigger as any).lastPrice,
+      };
+      delete migrated.lastPrice;
+      this.triggers.set(trigger.id, migrated);
     }
   }
 
@@ -216,7 +245,17 @@ export class TriggerStore {
 
   addOco(inputs: TriggerInput[], groupId = makeGroupId("oco")): TriggerOrder[] {
     if (inputs.length < 2) throw new Error("OCO requires at least two child triggers");
-    return inputs.map((input) => this.add({ ...input, ocoGroupId: input.ocoGroupId ?? groupId }));
+    const created: TriggerOrder[] = [];
+    try {
+      for (const input of inputs) created.push(this.add({ ...input, ocoGroupId: input.ocoGroupId ?? groupId }));
+      return created;
+    } catch (error) {
+      // OCO must be atomic: never leave a half-created TP/SL pair behind if
+      // validation fails for a later child trigger.
+      for (const trigger of created) this.triggers.delete(trigger.id);
+      if (created.length) this.save();
+      throw error;
+    }
   }
 
   get(id: string): TriggerOrder | undefined {
@@ -240,7 +279,7 @@ export class TriggerStore {
 
   cancel(id: string): TriggerOrder | undefined {
     const current = this.triggers.get(id);
-    if (!current || current.status !== "ACTIVE") return current;
+    if (!current || current.status !== "ACTIVE") return undefined;
     return this.setStatus(id, "CANCELLED");
   }
 
@@ -285,9 +324,21 @@ export class TriggerStore {
     return [...new Set(this.active().map((trigger) => trigger.symbol))].sort();
   }
 
+  pendingBracketEntries(): TriggerOrder[] {
+    return this.list().filter(isPendingBracketEntry);
+  }
+
+  runtimeNeeded(): boolean {
+    return this.active().length > 0 || this.pendingBracketEntries().length > 0;
+  }
+
   watchableSymbols(): string[] {
     return [...new Set(this.active()
-      .filter((trigger) => trigger.kind !== "TIME_CLOSE" && trigger.kind !== "TIME_CANCEL")
+      .filter(needsL2MarketData)
       .map((trigger) => trigger.symbol))].sort();
+  }
+
+  needsAccountData(): boolean {
+    return this.list().some(needsAccountData);
   }
 }

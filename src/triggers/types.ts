@@ -13,8 +13,8 @@ export type TriggerKind =
   | "RISK_GUARD"
   | "PRICE_BAND";
 export type TriggerDirection = "ABOVE" | "BELOW";
-export type TriggerStatus = "ACTIVE" | "TRIGGERED" | "CANCELLED" | "REJECTED";
-export type TriggerPriceSource = "last" | "mid" | "bid" | "ask" | "mark";
+export type TriggerStatus = "ACTIVE" | "SUBMITTING" | "TRIGGERED" | "CANCELLED" | "REJECTED";
+export type TriggerPriceSource = "side";
 export type AmountMode = "AMOUNT" | "PERCENT";
 export type PriceBandMode = "BREAKOUT" | "REVERSION";
 export type RiskMetric = "MAX_POSITION_QTY" | "MAX_RISK_USD" | "MAX_LOSS_USD";
@@ -57,7 +57,7 @@ export interface TriggerOrder {
   createdAt: number;
   updatedAt: number;
   firedAt?: number;
-  lastPrice?: number;
+  lastCheckedPrice?: number;
   orderId?: string;
   clientOrderId?: string;
   error?: string;
@@ -126,17 +126,22 @@ export interface TriggerInput {
 
 export interface MarketTick {
   symbol: string;
-  price: number;
-  last?: number;
-  mid?: number;
+  /** Legacy/diagnostic only. Price-trigger decisions use side-specific L2 book depth instead. */
+  price?: number;
   bid?: number;
   ask?: number;
+  bidQty?: number;
+  askQty?: number;
+  bidQuantity?: number;
+  askQuantity?: number;
   mark?: number;
   ts?: number;
   orderBook?: unknown;
 }
 
 export interface SubmitOrderRequest {
+  /** Telegram owner/user id for per-user account-session routing. Local only; never sent in the Quote.Trade body. */
+  ownerId?: string;
   symbol: string;
   side: OrderSide;
   type: "MARKET" | "LIMIT";
@@ -193,10 +198,10 @@ export function makeGroupId(prefix = "grp"): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function normalizeTriggerSource(value?: string): TriggerPriceSource {
-  const source = String(value ?? "last").trim().toLowerCase();
-  if (["last", "mid", "bid", "ask", "mark"].includes(source)) return source as TriggerPriceSource;
-  throw new Error("triggerSource must be last, mid, bid, ask, or mark");
+export function normalizeTriggerSource(_value?: string): TriggerPriceSource {
+  // Kept for backward compatibility with previously persisted triggers and older CLI options.
+  // Price-trigger decisions are always side-based now: BUY uses ask-side L2, SELL uses bid-side L2.
+  return "side";
 }
 
 export function normalizeAmountMode(value?: string): AmountMode {
@@ -301,18 +306,93 @@ export function orderTypeForTrigger(trigger: TriggerOrder, marketPrice?: number)
   return price && price > 0 ? "LIMIT" : "MARKET";
 }
 
-export function selectTickPrice(tick: MarketTick, source: TriggerPriceSource = "last", position?: PositionSnapshot): number {
-  const pick = (v: unknown): number | undefined => {
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  };
-  const bid = pick(tick.bid);
-  const ask = pick(tick.ask);
-  if (source === "bid") return bid ?? pick(tick.price) ?? 0;
-  if (source === "ask") return ask ?? pick(tick.price) ?? 0;
-  if (source === "mid") return pick(tick.mid) ?? (bid && ask ? (bid + ask) / 2 : undefined) ?? pick(tick.price) ?? 0;
-  if (source === "mark") return pick(tick.mark) ?? pick(position?.markPrice) ?? pick(tick.price) ?? 0;
-  return pick(tick.last) ?? pick(tick.price) ?? 0;
+export interface L2PriceLevel {
+  price: number;
+  quantity: number;
+}
+
+export interface L2ExecutableQuote {
+  /** BUY consumes asks; SELL consumes bids. */
+  bookSide: "ask" | "bid";
+  orderSide: OrderSide;
+  /** Worst price needed to fill requestedQuantity from the current L2 depth. */
+  price: number;
+  /** Cumulative book quantity available through price. */
+  availableQuantity: number;
+  requestedQuantity: number;
+  levelsConsumed: number;
+}
+
+function toPositiveNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    const n = typeof value === "number" ? value : Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return undefined;
+}
+
+function levelFromRaw(raw: any): L2PriceLevel | undefined {
+  if (Array.isArray(raw)) {
+    const price = toPositiveNumber(raw[0]);
+    const quantity = toPositiveNumber(raw[1]);
+    return price && quantity ? { price, quantity } : undefined;
+  }
+
+  const price = toPositiveNumber(raw?.p, raw?.price, raw?.px, raw?.rate);
+  const quantity = toPositiveNumber(raw?.q, raw?.qty, raw?.quantity, raw?.size, raw?.amount, raw?.dp, raw?.d);
+  return price && quantity ? { price, quantity } : undefined;
+}
+
+function levelsFromBook(tick: MarketTick, side: "ask" | "bid"): L2PriceLevel[] {
+  const book: any = (tick.orderBook as any)?.data ?? tick.orderBook ?? {};
+  const rawLevels = side === "ask"
+    ? (book.asks ?? book.a ?? book.sell ?? book.sells)
+    : (book.bids ?? book.b ?? book.buy ?? book.buys);
+
+  const levels = Array.isArray(rawLevels)
+    ? rawLevels.map(levelFromRaw).filter(Boolean) as L2PriceLevel[]
+    : [];
+
+  if (!levels.length) {
+    const price = side === "ask" ? toPositiveNumber(tick.ask) : toPositiveNumber(tick.bid);
+    const quantity = side === "ask"
+      ? toPositiveNumber(tick.askQty, tick.askQuantity)
+      : toPositiveNumber(tick.bidQty, tick.bidQuantity);
+    if (price && quantity) levels.push({ price, quantity });
+  }
+
+  levels.sort((a, b) => side === "ask" ? a.price - b.price : b.price - a.price);
+  return levels;
+}
+
+export function bookSideForOrder(side: OrderSide): "ask" | "bid" {
+  return side === "BUY" ? "ask" : "bid";
+}
+
+export function selectL2SideQuote(tick: MarketTick, side: OrderSide, quantity: number): L2ExecutableQuote | undefined {
+  const requestedQuantity = toPositiveNumber(quantity);
+  if (!requestedQuantity) return undefined;
+
+  const bookSide = bookSideForOrder(side);
+  const levels = levelsFromBook(tick, bookSide);
+  let cumulativeQuantity = 0;
+
+  for (let i = 0; i < levels.length; i += 1) {
+    cumulativeQuantity += levels[i].quantity;
+    if (cumulativeQuantity + 1e-12 >= requestedQuantity) {
+      return {
+        bookSide,
+        orderSide: side,
+        price: levels[i].price,
+        availableQuantity: cumulativeQuantity,
+        requestedQuantity,
+        levelsConsumed: i + 1,
+      };
+    }
+  }
+
+  return undefined;
 }
 
 export function unrealizedPnlUsd(position?: PositionSnapshot): number {

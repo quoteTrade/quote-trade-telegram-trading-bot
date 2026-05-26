@@ -42,10 +42,9 @@ export function formatTrigger(trigger: TriggerOrder): string {
     trigger.riskMetric ? `risk=${trigger.riskMetric}:${trigger.riskThreshold}` : "",
     trigger.riskAction ? `action=${trigger.riskAction}` : "",
     dir ? `direction=${dir}` : "",
-    trigger.triggerSource ? `source=${trigger.triggerSource}` : "",
     qty ? `qty=${qty}` : "",
     trigger.ocoGroupId ? `oco=${trigger.ocoGroupId}` : "",
-    trigger.lastPrice ? `last=${trigger.lastPrice}` : "",
+    trigger.lastCheckedPrice ? `checked=${trigger.lastCheckedPrice}` : "",
     trigger.clientOrderId || trigger.orderId ? `order=${trigger.clientOrderId ?? trigger.orderId}` : "",
     trigger.error ? `error=${trigger.error}` : "",
   ].filter(Boolean);

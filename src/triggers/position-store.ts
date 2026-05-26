@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { normalizeSymbol, PositionSnapshot, sideToClosePosition } from "./types";
 import type { OrderSide } from "./types";
@@ -19,8 +19,9 @@ function readJsonFile<T>(filePath: string, fallback: T): T {
 function writeJsonFile(filePath: string, data: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2));
+  writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   renameSync(tmp, filePath);
+  try { chmodSync(filePath, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
 }
 
 function toNumber(...values: unknown[]): number | undefined {
@@ -88,17 +89,33 @@ export class PositionStore {
     return position;
   }
 
-  merge(rawPositions: any): PositionSnapshot[] {
-    const list = Array.isArray(rawPositions)
+  private positionList(rawPositions: any): any[] {
+    return Array.isArray(rawPositions)
       ? rawPositions
       : Array.isArray(rawPositions?.positions)
         ? rawPositions.positions
         : Array.isArray(rawPositions?.data)
           ? rawPositions.data
           : [];
-    const merged = list.map((position: any) => this.upsert(position, undefined, false)).filter(Boolean) as PositionSnapshot[];
+  }
+
+  merge(rawPositions: any): PositionSnapshot[] {
+    const merged = this.positionList(rawPositions).map((position: any) => this.upsert(position, undefined, false)).filter(Boolean) as PositionSnapshot[];
     if (merged.length) this.save();
     return merged;
+  }
+
+  replace(rawPositions: any): PositionSnapshot[] {
+    this.positions.clear();
+    const replaced = this.positionList(rawPositions).map((position: any) => normalizePosition(position)).filter(Boolean) as PositionSnapshot[];
+    for (const position of replaced) this.positions.set(position.symbol, position);
+    this.save();
+    return replaced;
+  }
+
+  clear(): void {
+    this.positions.clear();
+    this.save();
   }
 
   setMark(symbolRaw: string, markPrice: number, persist = false): void {

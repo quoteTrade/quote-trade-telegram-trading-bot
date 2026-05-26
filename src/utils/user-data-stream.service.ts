@@ -31,20 +31,73 @@ function mapOrderTrade(order: any): any | null {
   };
 }
 
+function isWsActive(ws?: WebSocket): boolean {
+  return !!ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
+}
+
+export interface UserDataStreamOptions {
+  ownerId?: string;
+  url?: string;
+  requestToken?: string | (() => string | undefined);
+  allowEnvFallback?: boolean;
+}
+
 export class UserDataStreamService extends EventEmitter {
   private ws?: WebSocket;
   private reconnectTimer?: NodeJS.Timeout;
+  private warnedMissingConfig = false;
   private stopped = false;
 
-  start(): void {
-    this.stopped = false;
-    this.ws = new WebSocket(process.env.LISTEN_KEY_WS_URL || "");
+  constructor(private readonly options: UserDataStreamOptions = {}) {
+    super();
+  }
 
-    this.ws.on("open", () => {
-      this.ws?.send(JSON.stringify({ unsubscribe: 0, requestToken: process.env.TRADE_API_KEY ?? "" }));
+  private streamUrl(): string | undefined {
+    const url = this.options.url ?? process.env.LISTEN_KEY_WS_URL;
+    return url && String(url).trim() ? String(url).trim() : undefined;
+  }
+
+  private requestToken(): string | undefined {
+    const raw = typeof this.options.requestToken === "function" ? this.options.requestToken() : this.options.requestToken;
+    const token = raw || (this.options.allowEnvFallback ? process.env.TRADE_API_KEY : undefined);
+    return token && String(token).trim() ? String(token).trim() : undefined;
+  }
+
+  start(): boolean {
+    this.stopped = false;
+    // if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === 0 || this.ws.readyState === 1)) {
+    if (isWsActive(this.ws)) {
+      return true;
+    }
+
+    const url = this.streamUrl();
+    const token = this.requestToken();
+
+    if (process.env.SESSION_DEBUG === "true") {
+      console.log("[USER_STREAM_START]", {
+        ownerId: this.options.ownerId,
+        hasUrl: !!url,
+        hasToken: !!token,
+      });
+    }
+
+    if (!url || !token) {
+      if (!this.warnedMissingConfig) {
+        this.warnedMissingConfig = true;
+        this.emit("warning", `Account stream not started${this.options.ownerId ? ` for owner ${this.options.ownerId}` : ""}: missing ${!url ? "LISTEN_KEY_WS_URL" : "session api key"}.`);
+      }
+      return false;
+    }
+    this.warnedMissingConfig = false;
+
+    const ws = new WebSocket(url);
+    this.ws = ws;
+
+    ws.on("open", () => {
+      if (this.ws === ws) ws.send(JSON.stringify({ unsubscribe: 0, requestToken: token }));
     });
 
-    this.ws.on("message", (data: WebSocket.RawData) => {
+    ws.on("message", (data: WebSocket.RawData) => {
       try {
         const feed = JSON.parse(data.toString());
         if (feed.e === "ORDER_TRADE_UPDATE" || feed.o) {
@@ -59,19 +112,31 @@ export class UserDataStreamService extends EventEmitter {
       }
     });
 
-    this.ws.on("close", () => {
-      if (!this.stopped) this.reconnectTimer = setTimeout(() => this.start(), 1000);
+    ws.on("close", () => {
+      if (this.ws === ws) this.ws = undefined;
+      if (!this.stopped && !this.reconnectTimer) {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = undefined;
+          this.start();
+        }, 1000);
+        this.reconnectTimer.unref?.();
+      }
     });
-    this.ws.on("error", (error: any) => this.emit("error", error));
+    ws.on("error", (error: any) => this.emit("error", error));
+    return true;
   }
 
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === 0)) {
-      this.ws.close(1000, "client stop");
+    this.reconnectTimer = undefined;
+    const ws = this.ws;
+    this.ws = undefined;
+    // if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING || ws.readyState === 0 || ws.readyState === 1)) {
+    if (isWsActive(ws)) {
+      ws.close(1000, "client stop");
     }
   }
 }
 
-export const UserDataStreamSvc = new UserDataStreamService();
+export const UserDataStreamSvc = new UserDataStreamService({ allowEnvFallback: true });

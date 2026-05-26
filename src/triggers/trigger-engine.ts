@@ -8,19 +8,33 @@ import {
   orderPriceForTrigger,
   orderTypeForTrigger,
   PositionSnapshot,
-  selectTickPrice,
+  selectL2SideQuote,
   shouldTrigger,
   SubmitOrderRequest,
   TriggerOrder,
   TriggerOrderExecutor,
   unrealizedPnlUsd,
 } from "./types";
+import type { OrderSide } from "./types";
 
 export interface TriggerEngineOptions {
+  /** Max age for cached L2 ticks used by timer-driven order triggers. Set 0 to disable. */
+  maxTickAgeMs?: number;
   onTrigger?: (trigger: TriggerOrder, order: SubmitOrderRequest) => void;
   onReject?: (trigger: TriggerOrder, reason: string) => void;
   onError?: (trigger: TriggerOrder, error: unknown) => void;
   onAction?: (trigger: TriggerOrder, message: string) => void;
+}
+
+interface OrderIntent {
+  side: OrderSide;
+  quantity: number;
+  reduceOnly: boolean;
+}
+
+interface TriggerMarket extends OrderIntent {
+  /** Matching-side worst executable L2 price for this exact order intent. */
+  price: number;
 }
 
 function isTimer(trigger: TriggerOrder): boolean {
@@ -43,6 +57,7 @@ function roughlyEqual(a: number | undefined, b: number | undefined): boolean {
 
 export class TriggerEngine {
   private firing = new Set<string>();
+  private lastTicks = new Map<string, MarketTick>();
 
   constructor(
     private store: TriggerStore,
@@ -53,58 +68,84 @@ export class TriggerEngine {
 
   async processTick(tick: MarketTick): Promise<void> {
     const symbol = normalizeSymbol(tick.symbol);
-    const fallbackPrice = selectTickPrice(tick, "last", this.positions.get(symbol)) || Number(tick.price);
-    if (!Number.isFinite(fallbackPrice) || fallbackPrice <= 0) return;
+    const normalizedTick = { ...tick, symbol, ts: tick.ts ?? Date.now() };
+    const now = Date.now();
 
-    this.positions.setMark(symbol, tick.mark ?? fallbackPrice, false);
-    await this.processDueTimers(Date.now());
+    // Cached snapshots can be replayed to newly-created trigger subscribers.
+    // Treat all order-trigger decisions the same as timer-driven triggers: do
+    // not update marks, fire triggers, or satisfy timers from stale L2 depth.
+    if (!this.isFreshTick(normalizedTick, now)) return;
+
+    this.lastTicks.set(symbol, normalizedTick);
+    this.updatePositionMarkFromBook(symbol, normalizedTick);
+
+    await this.processDueTimers(now);
 
     for (const baseTrigger of this.store.active(symbol)) {
       const trigger = this.store.get(baseTrigger.id) ?? baseTrigger;
       if (trigger.status !== "ACTIVE" || isTimer(trigger)) continue;
 
-      const price = selectTickPrice(tick, trigger.triggerSource, this.positions.get(symbol));
-      if (!Number.isFinite(price) || price <= 0) continue;
-
-      const current = this.applyTickState(trigger, price);
-
-      if (current.kind === "RISK_GUARD") {
-        if (this.isRiskGuardBreached(current)) await this.fire(current, price);
+      if (trigger.kind === "RISK_GUARD") {
+        if (!this.isRiskGuardBreached(trigger)) continue;
+        if (trigger.riskAction === "CLOSE_POSITION") {
+          const market = this.marketForTrigger(trigger, normalizedTick);
+          if (!market) continue;
+          await this.fire({ ...trigger, side: market.side }, market.price, market);
+        } else {
+          await this.fireRiskGuardIfNoOrder(trigger);
+        }
         continue;
       }
 
-      const matched = shouldTrigger(current, price);
+      const market = this.marketForTrigger(trigger, normalizedTick);
+      if (!market) continue;
 
+      const resolvedTrigger = { ...trigger, side: market.side };
+      const current = this.applyTickState(resolvedTrigger, market.price);
+      const currentForDecision = { ...current, side: market.side };
+
+      const matched = shouldTrigger(currentForDecision, market.price);
       if (process.env.TRIGGER_DEBUG === "true") {
         console.log("[TRIGGER_CHECK]", {
-          id: current.id,
-          kind: current.kind,
-          symbol: current.symbol,
-          side: current.side,
-          triggerSource: current.triggerSource,
-          selectedPrice: price,
-          triggerPrice: current.triggerPrice,
-          limitPrice: current.limitPrice,
-          bid: tick.bid,
-          ask: tick.ask,
-          mid: tick.mid,
-          last: tick.last,
-          mark: tick.mark,
+          id: currentForDecision.id,
+          kind: currentForDecision.kind,
+          symbol: currentForDecision.symbol,
+
+          commandSide: trigger.side,
+          resolvedSide: market.side,
+
+          quantity: market.quantity,
+          selectedL2Price: market.price,
+
+          triggerPrice: currentForDecision.triggerPrice,
+          limitPrice: currentForDecision.limitPrice,
+          currentStopPrice: currentForDecision.currentStopPrice,
+
+          direction: currentForDecision.side === "BUY" ? "BUY logic" : "SELL logic",
           matched,
         });
       }
 
-      if (matched) await this.fire(current, price);
-      // if (shouldTrigger(current, price)) await this.fire(current, price);
+      if (matched) await this.fire(currentForDecision, market.price, market);
+
+      // if (shouldTrigger(currentForDecision, market.price)) await this.fire(currentForDecision, market.price, market);
     }
   }
 
   async processDueTimers(now = Date.now()): Promise<void> {
     for (const trigger of this.store.active()) {
-      if (isTimer(trigger) && trigger.triggerAt && trigger.triggerAt <= now) {
-        const position = this.positions.get(trigger.symbol);
-        await this.fire(trigger, position?.markPrice ?? trigger.lastPrice ?? 0);
+      if (!isTimer(trigger) || !trigger.triggerAt || trigger.triggerAt > now) continue;
+
+      if (trigger.kind === "TIME_CANCEL") {
+        await this.fire(trigger, 0);
+        continue;
       }
+
+      const tick = this.lastTicks.get(trigger.symbol);
+      if (!tick || !this.isFreshTick(tick, now)) continue;
+      const market = this.marketForTrigger(trigger, tick);
+      if (!market) continue;
+      await this.fire({ ...trigger, side: market.side }, market.price, market);
     }
   }
 
@@ -128,6 +169,7 @@ export class TriggerEngine {
     const marketPrice = this.positions.get(symbol)?.markPrice ?? 0;
     for (const guard of this.store.active(symbol).filter((trigger) => trigger.kind === "RISK_GUARD")) {
       if (!this.isRiskGuardBreached(guard)) continue;
+      if (guard.riskAction === "CLOSE_POSITION") continue; // close orders wait for a depth-checked L2 tick
       await this.fire(guard, marketPrice);
       const updated = this.store.get(guard.id);
       if (updated) changed.push(updated);
@@ -136,7 +178,43 @@ export class TriggerEngine {
     return changed;
   }
 
-  resolveOrder(trigger: TriggerOrder, marketPrice: number): SubmitOrderRequest | string {
+  resolveOrder(trigger: TriggerOrder, marketPrice: number, precheckedIntent?: OrderIntent): SubmitOrderRequest | string {
+    const intent = precheckedIntent ?? this.resolveOrderIntent(trigger);
+    if (typeof intent === "string") return intent;
+
+    const resolvedTrigger = { ...trigger, side: intent.side };
+    const orderType = orderTypeForTrigger(resolvedTrigger, marketPrice);
+    const price = orderPriceForTrigger(resolvedTrigger, marketPrice);
+    if (orderType === "LIMIT" && (!price || price <= 0)) return "Triggered order has no valid limit price";
+
+    return {
+      ownerId: trigger.ownerId,
+      symbol: trigger.symbol,
+      side: intent.side,
+      type: orderType,
+      quantity: intent.quantity,
+      price: orderType === "LIMIT" ? price : undefined,
+      paymentCurrency: trigger.paymentCurrency,
+      account: trigger.account,
+      reduceOnly: intent.reduceOnly,
+      clientOrderId: `qt_${trigger.id}`,
+    };
+  }
+
+
+  private maxTickAgeMs(): number {
+    const configured = this.options.maxTickAgeMs ?? Number(process.env.TRIGGER_MAX_L2_AGE_MS ?? 5000);
+    return Number.isFinite(configured) && configured > 0 ? configured : 0;
+  }
+
+  private isFreshTick(tick: MarketTick, now = Date.now()): boolean {
+    const maxAge = this.maxTickAgeMs();
+    if (!maxAge) return true;
+    const ts = Number(tick.ts);
+    return Number.isFinite(ts) && ts > 0 && now - ts <= maxAge;
+  }
+
+  private resolveOrderIntent(trigger: TriggerOrder): OrderIntent | string {
     let side = trigger.side;
     let quantity = trigger.quantity;
 
@@ -154,23 +232,65 @@ export class TriggerEngine {
     }
 
     if (!quantity || quantity <= 0) return "Trigger quantity resolved to zero";
+    return { side, quantity, reduceOnly: trigger.reduceOnly || shouldResolveFromPosition };
+  }
 
-    const resolvedTrigger = { ...trigger, side };
-    const orderType = orderTypeForTrigger(resolvedTrigger, marketPrice);
-    const price = orderPriceForTrigger(resolvedTrigger, marketPrice);
-    if (orderType === "LIMIT" && (!price || price <= 0)) return "Triggered order has no valid limit price";
+  private marketForTrigger(trigger: TriggerOrder, tick: MarketTick): TriggerMarket | undefined {
+    const intent = this.resolveOrderIntent(trigger);
+    if (typeof intent === "string") return undefined;
 
-    return {
-      symbol: trigger.symbol,
-      side,
-      type: orderType,
-      quantity,
-      price: orderType === "LIMIT" ? price : undefined,
-      paymentCurrency: trigger.paymentCurrency,
-      account: trigger.account,
-      reduceOnly: trigger.reduceOnly || shouldResolveFromPosition,
-      clientOrderId: `qt_${trigger.id}`,
-    };
+    const quote = selectL2SideQuote(tick, intent.side, intent.quantity);
+
+    if (process.env.TRIGGER_DEBUG === "true") {
+      const book = (tick.orderBook as any) ?? {};
+
+      console.log("[L2_TRIGGER_MARKET]", {
+        id: trigger.id,
+        kind: trigger.kind,
+        symbol: trigger.symbol,
+
+        commandSide: trigger.side,
+        resolvedSide: intent.side,
+        quantity: intent.quantity,
+        reduceOnly: intent.reduceOnly,
+
+        triggerPrice: trigger.triggerPrice,
+        limitPrice: trigger.limitPrice,
+        triggerSource: trigger.triggerSource,
+
+        bid: tick.bid,
+        ask: tick.ask,
+
+        bestBid: book.bids?.[0],
+        bestAsk: book.asks?.[0],
+        topBids: book.bids?.slice?.(0, 5),
+        topAsks: book.asks?.slice?.(0, 5),
+
+        selectedL2Quote: quote,
+        selectedL2Price: quote?.price,
+        hasEnoughL2Depth: !!quote,
+      });
+    }
+    if (!quote) return undefined;
+
+    return { side: intent.side, quantity: intent.quantity, reduceOnly: intent.reduceOnly, price: quote.price };
+  }
+
+  private updatePositionMarkFromBook(symbol: string, tick: MarketTick): void {
+    const position = this.positions.get(symbol);
+    if (!position) return;
+
+    const closeSide = this.positions.getCloseSide(symbol);
+    const closeQty = this.positions.getCloseQuantity(symbol);
+    if (!closeSide || closeQty <= 0) return;
+
+    const quote = selectL2SideQuote(tick, closeSide, closeQty);
+    if (quote) this.positions.setMark(symbol, quote.price, false);
+  }
+
+  private async fireRiskGuardIfNoOrder(trigger: TriggerOrder): Promise<void> {
+    const marketPrice = this.positions.get(trigger.symbol)?.markPrice ?? trigger.lastCheckedPrice ?? 0;
+    await this.fire(trigger, marketPrice);
   }
 
   private applyTickState(trigger: TriggerOrder, price: number): TriggerOrder {
@@ -186,35 +306,16 @@ export class TriggerEngine {
         dynamicPatch = { lowWaterMark, currentStopPrice: lowWaterMark + distance };
       }
       const moved = patchChanges(trigger, dynamicPatch);
-      const updated = this.store.update(trigger.id, { ...dynamicPatch, lastPrice: price }, { persist: moved }) ?? trigger;
-
-      if (process.env.TRIGGER_DEBUG === "true") {
-        console.log("[TRAILING_UPDATE]", {
-          id: updated.id,
-          kind: updated.kind,
-          symbol: updated.symbol,
-          side: updated.side,
-          triggerSource: updated.triggerSource,
-          selectedPrice: price,
-          highWaterMark: updated.highWaterMark,
-          lowWaterMark: updated.lowWaterMark,
-          currentStopPrice: updated.currentStopPrice,
-          trailMode: updated.trailMode,
-          trailValue: updated.trailValue,
-          moved,
-        });
-      }
-
-      return updated;
+      return this.store.update(trigger.id, { ...dynamicPatch, lastCheckedPrice: price }, { persist: moved }) ?? trigger;
     }
 
     if (trigger.kind === "BREAK_EVEN_STOP") {
       const patch = this.breakEvenPatch(trigger, price);
       const changed = patchChanges(trigger, patch, new Set(["meta"]));
-      return this.store.update(trigger.id, { ...patch, lastPrice: price }, { persist: changed }) ?? trigger;
+      return this.store.update(trigger.id, { ...patch, lastCheckedPrice: price }, { persist: changed }) ?? trigger;
     }
 
-    return this.store.update(trigger.id, { lastPrice: price }, { persist: false }) ?? trigger;
+    return this.store.update(trigger.id, { lastCheckedPrice: price }, { persist: false }) ?? trigger;
   }
 
   private breakEvenPatch(trigger: TriggerOrder, price: number): Partial<TriggerOrder> {
@@ -253,9 +354,10 @@ export class TriggerEngine {
     return false;
   }
 
-  private async fire(trigger: TriggerOrder, marketPrice: number): Promise<void> {
+  private async fire(trigger: TriggerOrder, marketPrice: number, precheckedIntent?: OrderIntent): Promise<void> {
     if (this.firing.has(trigger.id)) return;
     let latest = this.store.get(trigger.id) ?? trigger;
+    if (precheckedIntent) latest = { ...latest, side: precheckedIntent.side };
     if (latest.status !== "ACTIVE") return;
     this.firing.add(trigger.id);
 
@@ -271,25 +373,26 @@ export class TriggerEngine {
       }
 
       latest = this.recordBracketEntrySubmission(latest);
-      const order = this.resolveOrder(latest, marketPrice);
+      const order = this.resolveOrder(latest, marketPrice, precheckedIntent);
       if (typeof order === "string") {
-        this.store.setStatus(latest.id, "REJECTED", { error: order, firedAt: Date.now(), lastPrice: marketPrice });
+        this.store.setStatus(latest.id, "REJECTED", { error: order, firedAt: Date.now(), lastCheckedPrice: marketPrice });
         this.options.onReject?.(latest, order);
         return;
       }
 
-      this.store.update(latest.id, { firedAt: Date.now(), lastPrice: marketPrice });
       if (process.env.TRIGGER_DEBUG === "true") {
         console.log("[TRIGGER_FIRE_SUBMIT_ORDER]", {
           triggerId: latest.id,
           kind: latest.kind,
           symbol: latest.symbol,
           side: latest.side,
-          triggerSource: latest.triggerSource,
           marketPrice,
           order,
         });
       }
+
+      const submittedAt = Date.now();
+      this.store.setStatus(latest.id, "SUBMITTING", { firedAt: submittedAt, lastCheckedPrice: marketPrice });
       const result = await this.executor.submitOrder(order);
 
       if (process.env.TRIGGER_DEBUG === "true") {
@@ -298,12 +401,11 @@ export class TriggerEngine {
           result,
         });
       }
-
       const fired = this.store.setStatus(latest.id, "TRIGGERED", {
         orderId: result.orderId,
         clientOrderId: result.clientOrderId,
-        firedAt: Date.now(),
-        lastPrice: marketPrice,
+        firedAt: submittedAt,
+        lastCheckedPrice: marketPrice,
       }) ?? latest;
 
       const cancelled = this.store.cancelOcoSiblings(fired.ocoGroupId, fired.id);
@@ -311,7 +413,7 @@ export class TriggerEngine {
       this.options.onTrigger?.(fired, order);
     } catch (error: any) {
       const message = error?.message ?? String(error);
-      this.store.setStatus(latest.id, "REJECTED", { error: message, firedAt: Date.now(), lastPrice: marketPrice });
+      this.store.setStatus(latest.id, "REJECTED", { error: message, firedAt: Date.now(), lastCheckedPrice: marketPrice });
       this.options.onError?.(latest, error);
     } finally {
       this.firing.delete(trigger.id);
@@ -337,7 +439,7 @@ export class TriggerEngine {
       if (canceled) cancelled.push(canceled);
     }
     if (trigger.cancelGroupId) cancelled.push(...this.store.cancelGroup(trigger.cancelGroupId, trigger.id));
-    this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastPrice: marketPrice });
+    this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice });
     this.options.onAction?.(trigger, `Timed cancellation fired; cancelled ${cancelled.length} trigger(s).`);
   }
 
@@ -349,12 +451,12 @@ export class TriggerEngine {
         const canceled = this.store.cancel(open.id);
         if (canceled) cancelled.push(canceled);
       }
-      this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastPrice: marketPrice });
+      this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice });
       this.options.onAction?.(trigger, `Risk guard fired; cancelled ${cancelled.length} trigger(s).`);
       return;
     }
 
-    this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastPrice: marketPrice });
+    this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice });
     this.options.onAction?.(trigger, `Risk guard fired for ${trigger.symbol}.`);
   }
 

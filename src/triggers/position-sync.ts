@@ -1,36 +1,65 @@
 import { PositionStore } from "./position-store";
 
-export interface HttpLike { get(path: string, config?: any): Promise<any>; }
+export interface HttpLike {
+  get(path: string, config?: any): Promise<any>;
+}
 
-function extractPositions(payload: any): any[] {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.positions)) return payload.positions;
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload?.account?.positions)) return payload.account.positions;
-  return [];
+function looksLikeSinglePosition(payload: any): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+
+  const hasSymbol = payload.symbol !== undefined || payload.s !== undefined || payload.a !== undefined || payload.asset !== undefined;
+  const hasQty =
+      payload.netQty !== undefined ||
+      payload.positionAmt !== undefined ||
+      payload.pa !== undefined ||
+      payload.quantity !== undefined ||
+      payload.qty !== undefined ||
+      payload.availableQty !== undefined ||
+      payload.availableQuantity !== undefined ||
+      payload.aq !== undefined;
+
+  return hasSymbol && hasQty;
+}
+
+function extractPositions(payload: any): { found: boolean; positions: any[] } {
+  // Support ACCOUNT_UPDATE-style WS payload if API returns same shape.
+  if (Array.isArray(payload?.a?.P)) {
+    return { found: true, positions: payload.a.P };
+  }
+
+  return { found: false, positions: [] };
 }
 
 export class PositionSyncService {
   constructor(private http: HttpLike, private store: PositionStore) {}
 
   async refresh(config: any = {}): Promise<number> {
-    const paths = [process.env.POSITIONS_ENDPOINT || "", "/positions", "/account/positions", "/position", "/getPositions"].filter(Boolean);
-    let lastError: unknown;
+    // Use only the confirmed official endpoint.
+    const path = process.env.POSITIONS_ENDPOINT || "/positions";
 
-    for (const path of paths) {
-      try {
-        const payload = await this.http.get(path, config);
-        const positions = extractPositions(payload);
-        if (positions.length) {
-          this.store.merge(positions);
-          return positions.length;
-        }
-      } catch (error) {
-        lastError = error;
-      }
+    if (process.env.SESSION_DEBUG === "true") {
+      console.log("[POSITIONS_REFRESH_TRY]", { path });
     }
 
-    if (lastError) throw lastError;
-    return 0;
+    const payload = await this.http.get(path, config);
+    const extracted = extractPositions(payload);
+
+    if (process.env.SESSION_DEBUG === "true") {
+      console.log("[POSITIONS_REFRESH_RESPONSE]", {
+        path,
+        found: extracted.found,
+        count: extracted.positions.length,
+        isArray: Array.isArray(payload),
+        topLevelKeys: payload && typeof payload === "object" ? Object.keys(payload).slice(0, 20) : [],
+      });
+    }
+
+    if (!extracted.found) {
+      return 0;
+    }
+
+    // REST /positions is authoritative, so replace stale cached positions.
+    this.store.replace(extracted.positions);
+    return extracted.positions.length;
   }
 }

@@ -5,14 +5,14 @@ declare function require(name: string): any;
 declare namespace NodeJS { type Timeout = any; }
 
 declare module "node:fs" {
-  export const existsSync: any; export const mkdirSync: any; export const readFileSync: any; export const writeFileSync: any; export const renameSync: any;
+  export const existsSync: any; export const mkdirSync: any; export const readFileSync: any; export const writeFileSync: any; export const renameSync: any; export const readdirSync: any; export const unlinkSync: any; export const chmodSync: any;
 }
 declare module "node:path" { export const dirname: any; export const join: any; export const resolve: any; }
 declare module "node:events" {
   export default class EventEmitter { on(event: string, listener: (...args:any[]) => void): this; once(event:string, listener:(...args:any[])=>void): this; off(event:string, listener:(...args:any[])=>void): this; emit(event:string, ...args:any[]): boolean; }
   export { EventEmitter };
 }
-declare module "node:crypto" { export const createHmac: any; export const createPrivateKey: any; export const sign: any; export const generateKeyPairSync: any; }
+declare module "node:crypto" { export const createHmac: any; export const createPrivateKey: any; export const sign: any; export const generateKeyPairSync: any; export const createCipheriv: any; export const createDecipheriv: any; export const createHash: any; export const randomBytes: any; }
 declare module "axios" { const axios: any; export default axios; }
 declare module "dotenv" { export function config(): any; }
 declare module "ws" {
@@ -22,10 +22,6 @@ declare module "ws" {
 }
 declare module "commander" {
   export class Command { name(v:string):this; description(v:string):this; helpOption(v:false|string):this; addHelpCommand(v:false|string):this; version(v:string, flags?:string, desc?:string):this; option(flags:string, desc?:string, parserOrDefault?:any, defaultValue?:any):this; requiredOption(flags:string, desc?:string, parserOrDefault?:any, defaultValue?:any):this; command(nameAndArgs:string):Command; action(fn:(...args:any[])=>any):this; opts():any; parse(argv?:string[]):this; }
-}
-declare module "node-telegram-bot-api" {
-  class TelegramBot { constructor(token:string, options?:any); onText(regex:RegExp, callback:(msg:any, match:RegExpExecArray|null)=>void):void; sendMessage(chatId:any, text:string, options?:any):Promise<any>; }
-  export = TelegramBot; export default TelegramBot;
 }
 declare module "ethers" { export const ethers: any; }
 declare module "numeral" { const numeral: any; export default numeral; }

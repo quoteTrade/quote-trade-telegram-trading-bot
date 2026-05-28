@@ -8,7 +8,7 @@ import { PositionStore } from "./triggers/position-store";
 import { TriggerStore } from "./triggers/trigger-store";
 import { TriggerEngine } from "./triggers/trigger-engine";
 import { TriggerRuntime } from "./trigger-runtime";
-import { formatRisk, formatTriggers } from "./triggers/format";
+import {formatOrderPage, formatRisk, formatTriggers, parsePage} from "./triggers/format";
 import { asNumber, escapeLong, parseWords } from "./bot.utils";
 import { makeGroupId, normalizeSide, normalizeSymbol, parseAmountOrPercent, parseTimeOrDuration, TriggerInput } from "./triggers/types";
 import { LlmConfigStore, LlmDraftStore, LlmStrategyPlanner, FREE_FALLBACK_ORDER, formatDraft, formatLlmProviderRows, parsePlanCommands, redactedSecret } from "./llm";
@@ -16,6 +16,8 @@ import { TradingSessionStore, redacted } from "./sessions/trading-session-store"
 import { userStateFile } from "./sessions/user-state";
 import { UserDataStreamService } from "./utils/user-data-stream.service";
 import {PriceFeedSvc} from "./utils/price-feed.service";
+import {OrderHistoryStore} from "./triggers/order-history-store";
+import { cancelCodexOAuthLogin, codexOAuthStatus, logoutCodexOAuth, startCodexOAuthLogin } from "./llm/codex-oauth";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -34,6 +36,7 @@ interface UserScope {
   triggers: TriggerStore;
   llmConfig: LlmConfigStore;
   llmDrafts: LlmDraftStore;
+  orderHistory: OrderHistoryStore;
   service: BotService;
   engine: TriggerEngine;
   runtime: TriggerRuntime;
@@ -53,6 +56,7 @@ function getScope(ownerId: string): UserScope {
   const cached = scopes.get(owner);
   if (cached) return cached;
 
+  const orderHistory = new OrderHistoryStore();
   const positions = new PositionStore(userStateFile(owner, "positions.json"));
   const triggers = new TriggerStore(userStateFile(owner, "triggers.json"));
   const llmConfig = new LlmConfigStore(userStateFile(owner, "llm-config.json"));
@@ -65,9 +69,19 @@ function getScope(ownerId: string): UserScope {
     onError: (t, e: any) => void notifyOwner(t.ownerId, `❌ Trigger error ${t.id}: ${e?.message ?? e}`),
     onAction: (t, m) => void notifyOwner(t.ownerId, `⚙️ ${t.id}: ${m}`),
   });
-  const runtime = new TriggerRuntime(triggers, positions, engine, (m) => console.log(`[owner=${owner}] ${m}`), userData);
+  // const runtime = new TriggerRuntime(triggers, positions, engine, (m) => console.log(`[owner=${owner}] ${m}`), userData);
+  const runtime = new TriggerRuntime(
+      triggers,
+      positions,
+      engine,
+      (m) => console.log(`[owner=${owner}] ${m}`),
+      userData,
+      undefined,
+      orderHistory,
+  );
 
-  const scope = { ownerId: owner, positions, triggers, llmConfig, llmDrafts, service, engine, runtime };
+  const scope = { ownerId: owner, positions, triggers, llmConfig, llmDrafts, orderHistory, service, engine, runtime };
+  // const scope = { ownerId: owner, positions, triggers, llmConfig, llmDrafts, service, engine, runtime };
   scopes.set(owner, scope);
   return scope;
 }
@@ -116,7 +130,12 @@ async function notifyOwner(ownerId: string, text: string): Promise<void> {
   await bot.sendMessage(ownerId, escapeLong(text)).catch(() => undefined);
 }
 
-function send(chatId: any, text: string): Promise<any> { return bot.sendMessage(chatId, escapeLong(text)); }
+function send(chatId: any, text: string): Promise<any> {
+  // return bot.sendMessage(chatId, escapeLong(text));
+  return bot.sendMessage(chatId, escapeLong(text), {
+    disable_web_page_preview: true,
+  });
+}
 function sendWithOptions(chatId: any, text: string, options?: any): Promise<any> { return (bot as any).sendMessage(chatId, escapeLong(text), options); }
 function command(handler: (ctx: CommandContext, words: string[], raw: string) => Promise<string> | string): (msg: any, match: RegExpExecArray | null) => void {
   return (msg, match) => {
@@ -224,6 +243,30 @@ async function createLlmStrategyDraft(chatId: any, ctx: any, prompt: string): Pr
   await sendLlmDraft(chatId, draft);
 }
 
+async function refreshUserPositionsForCommand(ctx: CommandContext, scope: UserScope, label: string): Promise<number> {
+  try {
+    sessions.require(ctx.ownerId);
+
+    const count = await scope.service.refreshPositions(ctx.ownerId);
+
+    if (process.env.SESSION_DEBUG === "true") {
+      console.log(`[${label}_POSITIONS_REFRESH_DONE]`, {
+        ownerId: ctx.ownerId,
+        count,
+        cachedCount: scope.positions.list().length,
+      });
+    }
+
+    for (const position of scope.positions.list()) {
+      await scope.engine.processPositionUpdate(position.symbol);
+    }
+
+    return count;
+  } catch (error) {
+    return 0;
+  }
+}
+
 function sessionStatus(ownerId: string): string {
   const s = sessions.summary(ownerId);
   if (!s.connected) return `No Quote.Trade account session is connected for your Telegram user id ${ownerId}. Use /connectkey in a private chat.`;
@@ -238,7 +281,7 @@ function sessionStatus(ownerId: string): string {
   ].filter(Boolean).join("\n");
 }
 
-bot.onText(/^\/start\b/i, command(async () => `${START_MESSAGE}\n\nAccount isolation: trading credentials, triggers, positions, and LLM drafts are stored per Telegram user. Use /connectkey in a private chat before real trading.`));
+bot.onText(/^\/start\b/i, command(async () => `${START_MESSAGE}`));
 
 bot.onText(/^\/session\b/i, command(async (ctx) => sessionStatus(ctx.ownerId)));
 
@@ -457,17 +500,42 @@ bot.onText(/^\/canceltrigger\b.*/i, command(async (ctx, words) => {
 
 bot.onText(/^\/positions\b/i, command(async (ctx) => {
   const scope = getScope(ctx.ownerId);
-  sessions.require(ctx.ownerId);
-  const count = await scope.service.refreshPositions(ctx.ownerId).catch(() => 0);
-  for (const position of scope.positions.list()) await scope.engine.processPositionUpdate(position.symbol);
+  await refreshUserPositionsForCommand(ctx, scope, "POSITIONS");
   return scope.positions.describe();
 }));
 
-bot.onText(/^\/risk\b/i, command(async (ctx) => formatRisk(getScope(ctx.ownerId).positions)));
+bot.onText(/^\/risk\b/i, command(async (ctx) => {
+  const scope = getScope(ctx.ownerId);
+  await refreshUserPositionsForCommand(ctx, scope, "RISK");
+  return formatRisk(scope.positions);
+}));
+
+// bot.onText(/^\/orders\b.*/i, command(async (ctx, words) => {
+//   const scope = getScope(ctx.ownerId);
+//   sessions.require(ctx.ownerId);
+//
+//   scope.runtime.startAccountWatcher();
+//
+//   const page = parsePage(words);
+//   return formatOrderPage("Recent orders", scope.orderHistory.orders(page), "orders");
+// }));
+
+bot.onText(/^\/filledorders\b.*/i, command(async (ctx, words) => {
+  const scope = getScope(ctx.ownerId);
+  sessions.require(ctx.ownerId);
+
+  // Start private user-data WS in background. Do not wait for full order history.
+  scope.runtime.startAccountWatcher();
+
+  const page = parsePage(words);
+  const result = scope.orderHistory.fills(page);
+
+  return formatOrderPage("Recent fills", result, "fills", scope.orderHistory.isSyncing());
+}));
 
 bot.onText(/^\/llmconnect\b.*/i, command(async (ctx, words) => {
   const scope = getScope(ctx.ownerId);
-  if (words.length < 1) throw new Error("Usage: /llmconnect openai|ovhcloud|gemini|openrouter|groq|huggingface|pollinations [model] [env:API_KEY|key:<api-key>] [default] [fallback]");
+  if (words.length < 1) throw new Error("Usage: /llmconnect openai|codex|ovhcloud|gemini|openrouter|groq|huggingface|pollinations [model] [env:API_KEY|key:<api-key>] [default] [fallback]");
   const [providerRaw, modelRaw, keyRaw, ...flags] = words;
   let apiKey: string | undefined; let apiKeyEnv: string | undefined; const extraFlags = [...flags];
   if (keyRaw?.startsWith("env:")) apiKeyEnv = keyRaw.slice(4); else if (keyRaw?.startsWith("key:")) apiKey = keyRaw.slice(4); else if (keyRaw && ["default", "fallback"].includes(keyRaw.toLowerCase())) extraFlags.unshift(keyRaw);
@@ -477,9 +545,50 @@ bot.onText(/^\/llmconnect\b.*/i, command(async (ctx, words) => {
   if (apiKey && ctx.chatType !== "private") throw new Error("For security, inline LLM API keys are only accepted in a private chat. Use env:NAME in groups.");
   if (apiKey) await deleteSensitiveCommand(ctx);
   const saved = scope.llmConfig.setConnection({ ownerId: ctx.ownerId, provider: providerRaw, model, apiKey, apiKeyEnv, makeDefault: extraFlags.includes("default"), useAsFallback: extraFlags.includes("fallback") });
-  const keySource = apiKey ? `stored:${redactedSecret(apiKey)}` : `env:${saved.apiKeyEnv}`;
+  const keySource = saved.provider === "codex-oauth" ? "per-user Codex OAuth (/codexconnect)" : apiKey ? `stored:${redactedSecret(apiKey)}` : `env:${saved.apiKeyEnv}`;
   return `Saved LLM connection for your Telegram user: ${saved.provider} model=${saved.model} key=${keySource}`;
 }));
+
+bot.onText(/^\/codexconnect\b.*/i, command(async (ctx, words) => {
+  if (ctx.chatType !== "private") throw new Error("For security, /codexconnect is only accepted in a private chat with the bot.");
+  const scope = getScope(ctx.ownerId);
+  const model = words[0] && !["default", "fallback"].includes(words[0].toLowerCase()) ? words[0] : process.env.CODEX_MODEL || "default";
+  scope.llmConfig.setConnection({ ownerId: ctx.ownerId, provider: "codex-oauth", model, makeDefault: true, useAsFallback: false });
+  const challenge = await startCodexOAuthLogin(ctx.ownerId, (result) => {
+    void notifyOwner(ctx.ownerId, result.success
+      ? `✅ Codex OAuth connected for your Telegram user. /prompt will use Codex model=${model}.`
+      : `❌ Codex OAuth login failed: ${result.error ?? "unknown error"}`);
+  });
+  return [
+    "Codex OAuth started for your Telegram user.",
+    `Open: ${challenge.verificationUrl}`,
+    `Code: ${challenge.userCode}`,
+    "After approving, I will send a confirmation message. Then use /prompt or /llmstrategy.",
+  ].join("\n");
+}));
+
+bot.onText(/^\/codexstatus\b/i, command(async (ctx) => {
+  if (ctx.chatType !== "private") throw new Error("For security, /codexstatus is only available in a private chat with the bot.");
+  const status = codexOAuthStatus(ctx.ownerId);
+  return [
+    `Codex OAuth for Telegram user ${ctx.ownerId}`,
+    `connected=${status.connected}`,
+    `pending=${status.pending}`,
+    status.loginId ? `loginId=${status.loginId}` : undefined,
+    `storage=${status.authFile}`,
+  ].filter(Boolean).join("\n");
+}));
+
+bot.onText(/^\/codexcancel\b/i, command(async (ctx) => {
+  if (ctx.chatType !== "private") throw new Error("For security, /codexcancel is only available in a private chat with the bot.");
+  return cancelCodexOAuthLogin(ctx.ownerId) ? "Cancelled pending Codex OAuth login." : "No pending Codex OAuth login for your Telegram user.";
+}));
+
+bot.onText(/^\/codexlogout\b/i, command(async (ctx) => {
+  if (ctx.chatType !== "private") throw new Error("For security, /codexlogout is only available in a private chat with the bot.");
+  return logoutCodexOAuth(ctx.ownerId) ? "Removed your local Codex OAuth session." : "No local Codex OAuth session was found for your Telegram user.";
+}));
+
 bot.onText(/^\/llmproviders\b/i, command(async (ctx) => formatLlmProviderRows(getScope(ctx.ownerId).llmConfig.listRows(ctx.ownerId))));
 bot.onText(/^\/llmfallbacks\b/i, command(async () => `Free/no-subscription fallback order: ${FREE_FALLBACK_ORDER.join(" -> ")}\nAnonymous providers are used without a key; other free-tier providers are tried when their env key is present.`));
 bot.onText(/^\/llmstrategy\b.*/i, (msg) => {

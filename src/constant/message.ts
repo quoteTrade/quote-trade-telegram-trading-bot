@@ -24,9 +24,10 @@ Trading commands:
 /canceltrigger <id>
 /positions
 /risk
+/filledorders [page]
 
 LLM strategy drafts:
-/llmconnect openai gpt-4o-mini env:OPENAI_API_KEY default
+/llmconnect openai gpt-4o-mini key:<your-openai-api-key> default
 /prompt protect my BTC long with a trailing stop and take profit
 /llmproviders
 /llmfallbacks
@@ -34,4 +35,35 @@ LLM strategy drafts:
 /llmcancel <draft-id>
 /llmdrafts
 
-Account isolation: trading credentials, triggers, positions, and LLM drafts are keyed by Telegram user id, not shared chat id.`;
+Account isolation: trading credentials, triggers, positions, and LLM drafts are keyed by Telegram user id, not shared chat id.
+
+LLM setup:
+- To use OpenAI, create an API key here:
+  https://platform.openai.com/api-keys
+
+Examples:
+  /llmconnect openai gpt-4o-mini key:<your-openai-api-key> default
+  /llmproviders
+
+Note:
+- Use key:<actual-api-key> if you want to save the key for your Telegram user.
+- Use env:OPENAI_API_KEY only when the key is already configured as a server environment variable.
+
+Account isolation: trading credentials, triggers, positions, and LLM drafts are stored per Telegram user. 
+Use /connectkey in a private chat before real trading. 
+Use /codexconnect in private chat to connect ChatGPT Pro/Codex OAuth for LLM planning.
+
+Codex OAuth setup:
+  /codexconnect [model]
+    Connect your Telegram user to Codex OAuth.
+    Example:
+      /codexconnect default
+  /codexstatus
+    Check Codex OAuth connection status.
+  /codexcancel
+    Cancel pending Codex OAuth login.
+  /codexlogout
+    Remove Codex OAuth session for this Telegram user.
+
+`;
+

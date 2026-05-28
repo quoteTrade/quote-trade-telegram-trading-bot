@@ -11,6 +11,7 @@ import {
   RiskMetric,
 } from "../triggers/types";
 import { decryptSecret, encryptSecret } from "../sessions/trading-session-store";
+import { completeCodexOAuthPlan, hasCodexOAuthSession } from "./codex-oauth";
 
 export type LlmProviderId =
   | "openai"
@@ -22,9 +23,10 @@ export type LlmProviderId =
   | "groq"
   | "huggingface"
   | "pollinations"
-  | "custom-openai";
+  | "custom-openai"
+  | "codex-oauth";
 
-export type LlmProtocol = "openai-chat" | "anthropic-messages" | "gemini-generate-content";
+export type LlmProtocol = "openai-chat" | "anthropic-messages" | "gemini-generate-content" | "codex-exec";
 export type PlanCommandFormat = "cli" | "telegram" | "mixed";
 
 export interface LlmProviderDefaults {
@@ -73,7 +75,7 @@ export interface ResolvedLlmConnection extends LlmConnection {
   effectiveBaseUrl: string;
   keySource?: "stored" | "env";
   freeFallbackCandidate: boolean;
-  source: "stored" | "env" | "anonymous";
+  source: "stored" | "env" | "anonymous" | "oauth";
 }
 
 export interface LlmProviderListRow {
@@ -82,7 +84,7 @@ export interface LlmProviderListRow {
   model: string;
   baseUrl: string;
   key: string;
-  source: "stored" | "env" | "anonymous" | "missing";
+  source: "stored" | "env" | "anonymous" | "oauth" | "missing";
   enabled: boolean;
   default: boolean;
   fallback: boolean;
@@ -182,6 +184,15 @@ export const LLM_PROVIDER_DEFAULTS: Record<LlmProviderId, LlmProviderDefaults> =
     defaultApiKeyEnv: "CUSTOM_LLM_API_KEY",
     alternateApiKeyEnvs: ["LLM_API_KEY"],
   },
+  "codex-oauth": {
+    provider: "codex-oauth",
+    displayName: "OpenAI Codex OAuth / ChatGPT",
+    protocol: "codex-exec",
+    defaultModel: "default",
+    defaultBaseUrl: "codex://local",
+    defaultApiKeyEnv: "",
+    requiresApiKey: false,
+  },
 };
 
 function stateDir(): string {
@@ -221,6 +232,7 @@ export function normalizeLlmProvider(raw: string): LlmProviderId {
   if (provider === "hf") return "huggingface";
   if (provider === "pollinations-ai") return "pollinations";
   if (provider === "custom" || provider === "openai-compatible") return "custom-openai";
+  if (["codex", "openai-codex", "chatgpt-pro", "chatgpt-codex", "gpt-pro"].includes(provider)) return "codex-oauth";
   if (Object.prototype.hasOwnProperty.call(LLM_PROVIDER_DEFAULTS, provider)) return provider as LlmProviderId;
   throw new Error(`Unsupported LLM provider: ${raw}`);
 }
@@ -249,6 +261,7 @@ function requiresApiKey(provider: LlmProviderId): boolean {
 }
 
 function canUseConnection(connection: ResolvedLlmConnection): boolean {
+  if (connection.provider === "codex-oauth") return hasCodexOAuthSession(connection.ownerId);
   return !requiresApiKey(connection.provider) || !!connection.effectiveApiKey;
 }
 
@@ -322,15 +335,17 @@ export class LlmConfigStore {
 
     for (const connection of config.connections.filter((item) => item.ownerId === actualOwner)) {
       const resolved = this.resolveConnection(connection);
-      const anonymous = !resolved.effectiveApiKey && !requiresApiKey(connection.provider);
+      const isCodex = connection.provider === "codex-oauth";
+      const codexConnected = isCodex && hasCodexOAuthSession(actualOwner);
+      const anonymous = !isCodex && !resolved.effectiveApiKey && !requiresApiKey(connection.provider);
       rows.push({
         provider: connection.provider,
         displayName: providerDefaults(connection.provider).displayName,
         model: connection.model,
         baseUrl: resolved.effectiveBaseUrl,
-        key: resolved.effectiveApiKey ? `${resolved.keySource}:${redactedSecret(resolved.effectiveApiKey)}` : anonymous ? "anonymous/free-tier" : "missing",
-        source: resolved.effectiveApiKey ? resolved.source : anonymous ? "anonymous" : "missing",
-        enabled: connection.enabled && (anonymous || !!resolved.effectiveApiKey),
+        key: isCodex ? (codexConnected ? "oauth:connected" : "run /codexconnect") : resolved.effectiveApiKey ? `${resolved.keySource}:${redactedSecret(resolved.effectiveApiKey)}` : anonymous ? "anonymous/free-tier" : "missing",
+        source: isCodex ? (codexConnected ? "oauth" : "missing") : resolved.effectiveApiKey ? resolved.source : anonymous ? "anonymous" : "missing",
+        enabled: connection.enabled && (codexConnected || anonymous || !!resolved.effectiveApiKey),
         default: config.defaultsByOwner[actualOwner] === connection.provider,
         fallback: connection.useAsFallback,
       });
@@ -341,14 +356,16 @@ export class LlmConfigStore {
       if (seen.has(provider)) continue;
       const defaults = providerDefaults(provider);
       const key = this.envKey(defaults);
+      const isCodex = provider === "codex-oauth";
+      const codexConnected = isCodex && hasCodexOAuthSession(actualOwner);
       rows.push({
         provider,
         displayName: defaults.displayName,
         model: defaults.defaultModel || "(set model)",
         baseUrl: defaults.defaultBaseUrl || "(set base URL)",
-        key: key ? `env:${redactedSecret(key)}` : !requiresApiKey(provider) ? "anonymous/free-tier" : `env:${[defaults.defaultApiKeyEnv, ...(defaults.alternateApiKeyEnvs ?? [])].join("|")} not set`,
-        source: key ? "env" : !requiresApiKey(provider) ? "anonymous" : "missing",
-        enabled: !!key || !requiresApiKey(provider),
+        key: isCodex ? (codexConnected ? "oauth:connected" : "run /codexconnect") : key ? `env:${redactedSecret(key)}` : !requiresApiKey(provider) ? "anonymous/free-tier" : `env:${[defaults.defaultApiKeyEnv, ...(defaults.alternateApiKeyEnvs ?? [])].filter(Boolean).join("|")} not set`,
+        source: isCodex ? (codexConnected ? "oauth" : "missing") : key ? "env" : !requiresApiKey(provider) ? "anonymous" : "missing",
+        enabled: codexConnected || !!key || (!isCodex && !requiresApiKey(provider)),
         default: config.defaultsByOwner[actualOwner] === provider,
         fallback: !!defaults.freeFallbackCandidate,
       });
@@ -396,12 +413,30 @@ export class LlmConfigStore {
       effectiveBaseUrl: baseUrl.replace(/\/$/, ""),
       keySource: key.source,
       freeFallbackCandidate: !!defaults.freeFallbackCandidate,
-      source: "stored",
+      source: connection.provider === "codex-oauth" && hasCodexOAuthSession(connection.ownerId) ? "oauth" : "stored",
     };
   }
 
   private envConnection(ownerId: string, provider: LlmProviderId): ResolvedLlmConnection | undefined {
     const defaults = providerDefaults(provider);
+    if (provider === "codex-oauth") {
+      if (!hasCodexOAuthSession(ownerId)) return undefined;
+      const model = env("CODEX_MODEL") || defaults.defaultModel;
+      return {
+        ownerId,
+        provider,
+        model,
+        enabled: true,
+        useAsFallback: false,
+        createdAt: 0,
+        updatedAt: 0,
+        displayName: defaults.displayName,
+        protocol: defaults.protocol,
+        effectiveBaseUrl: defaults.defaultBaseUrl,
+        freeFallbackCandidate: false,
+        source: "oauth",
+      };
+    }
     const apiKey = this.envKey(defaults);
     const baseUrl = env(`${providerPrefix(provider)}_BASE_URL`) || env("CUSTOM_LLM_BASE_URL") || env("LLM_BASE_URL") || defaults.defaultBaseUrl;
     const model = env(`${providerPrefix(provider)}_MODEL`) || defaults.defaultModel;
@@ -1135,6 +1170,7 @@ export class LlmProviderClient {
   constructor(private readonly post: PostJsonFn = postJson) {}
 
   async completePlan(connection: ResolvedLlmConnection, request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number }): Promise<RawLlmPlan> {
+    if (connection.protocol === "codex-exec") return completeCodexOAuthPlan(connection.ownerId, connection.model, request);
     if (!connection.effectiveApiKey && requiresApiKey(connection.provider)) throw new Error(`${connection.provider} API key is not configured`);
     if (connection.protocol === "anthropic-messages") return this.callAnthropic(connection, request);
     if (connection.protocol === "gemini-generate-content") return this.callGemini(connection, request);

@@ -3,6 +3,7 @@ import { UserDataStreamService, UserDataStreamSvc } from "./utils/user-data-stre
 import { PositionStore } from "./triggers/position-store";
 import { TriggerStore } from "./triggers/trigger-store";
 import { TriggerEngine } from "./triggers/trigger-engine";
+import {OrderHistoryStore} from "./triggers/order-history-store";
 
 export class TriggerRuntime {
   private stops = new Map<string, () => void>();
@@ -17,6 +18,7 @@ export class TriggerRuntime {
     private notify: (message: string) => void,
     private userDataStream: UserDataStreamService = UserDataStreamSvc,
     private priceFeed: PriceFeedService = PriceFeedSvc,
+    private orderHistory?: OrderHistoryStore,
   ) {}
 
   ensure(): void {
@@ -43,7 +45,11 @@ export class TriggerRuntime {
       const position = this.positions.upsert(p);
       if (position) void this.engine.processPositionUpdate(position.symbol).finally(() => this.reconcile());
     });
-    this.userDataStream.on("orderUpdate", (u: any) => this.notify(`Order update: ${u.side} ${u.symbol} status=${u.status}`));
+    // this.userDataStream.on("orderUpdate", (u: any) => this.notify(`Order update: ${u.side} ${u.symbol} status=${u.status}`));
+    this.userDataStream.on("orderUpdate", (u: any) => {
+      this.orderHistory?.upsert(u);
+      this.notify(`Order update: ${u.side} ${u.symbol} status=${u.status}`);
+    });
     this.userDataStream.on("warning", (message: any) => this.notify(String(message)));
     this.userDataStream.on("error", (e: any) => this.notify(`Account stream warning: ${e?.message ?? e}`));
     this.userDataListenersAttached = true;
@@ -106,5 +112,15 @@ export class TriggerRuntime {
     this.timer = undefined;
     this.userDataStream.stop();
     this.userDataStarted = false;
+  }
+
+  startAccountWatcher(): boolean {
+    this.attachUserDataListeners();
+
+    if (!this.userDataStarted) {
+      this.userDataStarted = this.userDataStream.start();
+    }
+
+    return this.userDataStarted;
   }
 }

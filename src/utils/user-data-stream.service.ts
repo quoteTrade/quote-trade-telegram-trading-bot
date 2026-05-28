@@ -17,17 +17,40 @@ function normalizePositionUpdate(feed: any): any[] {
 
 function mapOrderTrade(order: any): any | null {
   if (!order) return null;
+
   return {
-    symbol: String(order.s ?? "").split("/")[0],
+    symbol: String(order.s ?? order.symbol ?? "").split("/")[0],
     side: order.S === "BUY" || order.S === "1" ? "BUY" : "SELL",
-    status: String(order.X ?? order.status ?? "NEW"),
+
+    timestamp: typeof order.T === "number" ? order.T : Date.now(),
+
+    lastPx: order.L != null ? String(order.L) : undefined,
+    avgPx: order.a != null ? String(order.a) : undefined,
     clientOrderId: String(order.c ?? order.clientOrderId ?? ""),
+    timeInForce: order.f != null ? String(order.f) : undefined,
     orderId: order.i ? String(order.i) : undefined,
+    lastQty: order.l != null ? String(order.l) : undefined,
+
     quantity: order.q != null ? String(order.q) : undefined,
-    cumQty: order.z != null ? String(order.z) : undefined,
     price: order.p != null ? String(order.p) : undefined,
+    price2: order.p2 != null ? String(order.p2) : undefined,
+
+    ordType: order.o != null ? String(order.o) : undefined,
+    orderType: order.o != null ? String(order.o) : undefined,
+    type: order.o != null ? String(order.o) : undefined,
+
+    ordStatus: order.X != null ? String(order.X) : String(order.status ?? "NEW"),
+    status: order.X != null ? String(order.X) : String(order.status ?? "NEW"),
+
+    execType: order.x != null ? String(order.x) : undefined,
+    orderRejectReason: order.r != null ? String(order.r) : undefined,
+
+    cumQty: order.z != null ? String(order.z) : undefined,
+    execId: order.t ? String(order.t) : undefined,
+    leavesQty: order.lv != null ? Number(order.lv) : undefined,
+
     fillPrice: order.L ?? order.a,
-    reason: order.br != null ? String(order.br) : undefined,
+    raw: order,
   };
 }
 

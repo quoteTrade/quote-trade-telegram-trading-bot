@@ -397,7 +397,7 @@ export class PriceFeedService {
     }
 
     if (!force && this.subscribedSymbols.has(symbol)) {
-      if (process.env.SESSION_DEBUG === "true") {
+      if (process.env.PRICE_DEBUG === "true") {
         console.log("[PRICE_FEED_SOCKET_SUBSCRIBE_SKIP]", {
           reason: "already-subscribed",
           symbol,

@@ -2,7 +2,7 @@
 const assert = require('assert');
 const os = require('os');
 const path = require('path');
-const { parsePlanCommands, LlmStrategyPlanner, LlmDraftStore, LlmConfigStore, LlmProviderClient, isLlmDraftExpired } = require('../dist/llm');
+const { parsePlanCommands, LlmStrategyPlanner, LlmDraftStore, LlmConfigStore, LlmProviderClient, isLlmDraftExpired, formatDraftForTelegramHtml, confirmOrderButtonText } = require('../dist/llm');
 function fakeConnection(provider, model) { return { ownerId: 'default', provider, model, apiKeyEnv: 'TEST_KEY', enabled: true, useAsFallback: true, createdAt: 0, updatedAt: 0, displayName: provider, protocol: 'openai-chat', effectiveApiKey: 'test', effectiveBaseUrl: 'https://example.test/v1', keySource: 'env', freeFallbackCandidate: false, source: 'env' }; }
 (async () => {
   const cliActions = parsePlanCommands(['trigger:limit --symbol BTC --side BUY --price 60000 --quantity 0.01', 'trigger:oco --symbol BTC --side SELL --take-profit 65000 --stop-loss 58000 --stop-limit 57950 --close-position'], { format: 'cli', defaultPaymentCurrency: 'USD' });
@@ -33,8 +33,14 @@ function fakeConnection(provider, model) { return { ownerId: 'default', provider
   const ovhRaw = await ovhClient.completePlan(defaultConnections[0], { systemPrompt: 'system', userPrompt: 'user' });
   assert.equal(ovhRaw.commands[0], 'trigger:limit --symbol BTC --side BUY --price 60000 --quantity 0.01');
   const drafts = new LlmDraftStore(path.join(os.tmpdir(), `llm-drafts-${Date.now()}-${Math.random()}.json`));
-  const draft = drafts.add({ ownerId: 'u1', prompt: 'x', provider: 'openai', model: 'm', format: 'cli', summary: 's', commands: ['trigger:limit --symbol BTC --side BUY --price 60000 --quantity 0.01'], riskNotes: [] });
+  const draft = drafts.add({ ownerId: 'u1', prompt: 'x', provider: 'openai', model: 'm', format: 'telegram', summary: 'Use <carefully> & review', commands: ['/limit BTC BUY 60000 0.01'], riskNotes: ['Review before confirming & sizing'] });
   assert.equal(drafts.get(draft.id, 'u1').status, 'PENDING');
+  const draftHtml = formatDraftForTelegramHtml(draft);
+  assert.match(draftHtml, /<b>\/limit BTC BUY 60000 0\.01<\/b>/, 'Telegram draft should bold the proposed trade command');
+  assert.match(draftHtml, /Use &lt;carefully&gt; &amp; review/, 'Telegram draft HTML should escape model text');
+  assert.match(draftHtml, /BUY checks executable ASK depth; SELL checks executable BID depth/);
+  assert.equal(confirmOrderButtonText(1), '✅ Confirm Order');
+  assert.equal(confirmOrderButtonText(2), '✅ Confirm Orders');
   assert.equal(isLlmDraftExpired(draft, 1000, draft.createdAt + 500), false, 'fresh LLM drafts should remain confirmable');
   assert.equal(isLlmDraftExpired(draft, 1000, draft.createdAt + 1001), true, 'old LLM drafts should expire before order confirmation');
   const claimed = drafts.claimPending(draft.id, 'u1', 60_000);

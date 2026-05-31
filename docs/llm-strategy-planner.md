@@ -40,7 +40,7 @@ See `docs/free-llm-fallbacks.md` for provider details.
 /codexlogout
 ```
 
-Telegram draft messages include Confirm and Cancel buttons when the bot receives at least one valid command from the provider.
+Telegram draft messages include Confirm and Cancel buttons when the bot receives at least one valid command from the provider. The primary button now says `Confirm Order` or `Confirm Orders`, and the proposed command line is bolded in the draft message so the user can quickly identify exactly what will be created. The message also repeats the L2 execution rule: BUY checks executable ask depth and SELL checks executable bid depth.
 
 
 ## Codex OAuth for ChatGPT Pro/Codex users

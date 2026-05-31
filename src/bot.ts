@@ -11,11 +11,10 @@ import { TriggerRuntime } from "./trigger-runtime";
 import {formatOrderPage, formatRisk, formatTriggers, parsePage} from "./triggers/format";
 import { asNumber, escapeLong, parseWords } from "./bot.utils";
 import { makeGroupId, normalizeSide, normalizeSymbol, parseAmountOrPercent, parseTimeOrDuration, TriggerInput } from "./triggers/types";
-import { LlmConfigStore, LlmDraftStore, LlmStrategyPlanner, FREE_FALLBACK_ORDER, formatDraft, formatLlmProviderRows, parsePlanCommands, redactedSecret } from "./llm";
+import { LlmConfigStore, LlmDraftStore, LlmStrategyPlanner, FREE_FALLBACK_ORDER, confirmOrderButtonText, formatDraft, formatDraftForTelegramHtml, formatLlmProviderRows, parsePlanCommands, redactedSecret } from "./llm";
 import { TradingSessionStore, redacted } from "./sessions/trading-session-store";
 import { userStateFile } from "./sessions/user-state";
 import { UserDataStreamService } from "./utils/user-data-stream.service";
-import {PriceFeedSvc} from "./utils/price-feed.service";
 import {OrderHistoryStore} from "./triggers/order-history-store";
 import { cancelCodexOAuthLogin, codexOAuthStatus, logoutCodexOAuth, startCodexOAuthLogin } from "./llm/codex-oauth";
 
@@ -179,6 +178,25 @@ function assertConnected(ownerId: string): void {
   if ((process.env.MODE ?? "paper").toLowerCase() === "real") sessions.require(ownerId);
 }
 
+function formatCreatedTriggerForUser(trigger: any): string {
+  const qty = trigger.closePosition
+      ? "close position"
+      : trigger.closePercentage !== undefined
+          ? `${trigger.closePercentage}% of position`
+          : trigger.quantity;
+  const target = trigger.triggerPrice ?? trigger.limitPrice ?? trigger.currentStopPrice ?? trigger.upperPrice ?? trigger.lowerPrice;
+  const l2Side = trigger.side === "BUY" ? "ASK" : "BID";
+  const pieces = [
+    `• ${trigger.kind} ${trigger.side} ${trigger.symbol}`,
+    qty ? `qty=${qty}` : "",
+    target ? `target=${target}` : "",
+    trigger.limitPrice && trigger.limitPrice !== target ? `limit=${trigger.limitPrice}` : "",
+    `status=${trigger.status}`,
+    `id=${trigger.id}`,
+  ].filter(Boolean);
+  return `${pieces.join(" ")}\n  Checks executable ${l2Side} depth before firing.`;
+}
+
 function created(scope: UserScope, list: any | any[]): string {
   const triggersList = Array.isArray(list) ? list : [list];
   scope.runtime.ensure();
@@ -186,7 +204,13 @@ function created(scope: UserScope, list: any | any[]): string {
   // This prevents risk-only or cancel-only triggers from adding unnecessary
   // symbols to the shared multiplexed market-data stream.
   scope.runtime.reconcile();
-  return `Created trigger${triggersList.length > 1 ? "s" : ""}:\n${formatTriggers(triggersList)}`;
+  const noun = triggersList.length > 1 ? "order triggers" : "order trigger";
+  return [
+    `✅ Created ${noun}:`,
+    triggersList.map(formatCreatedTriggerForUser).join("\n"),
+    "",
+    "No live Quote.Trade order is sent until the trigger rules are met.",
+  ].join("\n");
 }
 
 function createTriggersFromLlmCommands(scope: UserScope, commands: string[]): any[] {
@@ -207,12 +231,21 @@ function createTriggersFromLlmCommands(scope: UserScope, commands: string[]): an
 }
 
 async function sendLlmDraft(chatId: any, draft: any): Promise<void> {
-  const text = `${formatDraft(draft)}\n\nConfirm only after review with /llmconfirm ${draft.id}`;
   const reply_markup = draft.commands?.length ? { inline_keyboard: [[
-    { text: "Confirm draft", callback_data: `llm_confirm:${draft.id}` },
-    { text: "Cancel", callback_data: `llm_cancel:${draft.id}` },
-  ]] } : undefined;
-  await sendWithOptions(chatId, text, reply_markup ? { reply_markup } : undefined);
+      { text: confirmOrderButtonText(draft.commands.length), callback_data: `llm_confirm:${draft.id}` },
+      { text: "Cancel", callback_data: `llm_cancel:${draft.id}` },
+    ]] } : undefined;
+
+  try {
+    await sendWithOptions(chatId, formatDraftForTelegramHtml(draft), {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...(reply_markup ? { reply_markup } : {}),
+    });
+  } catch (error) {
+    const fallbackText = `${formatDraft(draft)}\n\nConfirm only after review with /llmconfirm ${draft.id}`;
+    await sendWithOptions(chatId, fallbackText, reply_markup ? { reply_markup, disable_web_page_preview: true } : { disable_web_page_preview: true });
+  }
 }
 
 async function confirmLlmDraft(ctx: CommandContext, id: string): Promise<string> {
@@ -638,7 +671,7 @@ bot.onText(/^\/llmdrafts\b.*/i, command(async (ctx, words) => { const drafts = g
   const data = String(query?.data ?? ""); const chatId = query?.message?.chat?.id; const ownerId = String(query?.from?.id ?? ""); if (!chatId || !ownerId || !data.startsWith("llm_")) return;
   const ctx: CommandContext = { chatId, ownerId, chatType: query?.message?.chat?.type, msg: query?.message };
   Promise.resolve().then(async () => {
-    if (data.startsWith("llm_confirm:")) { const text = await confirmLlmDraft(ctx, data.slice("llm_confirm:".length)); await (bot as any).answerCallbackQuery?.(query.id, { text: "Draft confirmed" }).catch?.(() => undefined); await send(chatId, text); }
+    if (data.startsWith("llm_confirm:")) { const text = await confirmLlmDraft(ctx, data.slice("llm_confirm:".length)); await (bot as any).answerCallbackQuery?.(query.id, { text: "Order confirmed" }).catch?.(() => undefined); await send(chatId, text); }
     else if (data.startsWith("llm_cancel:")) { const draft = getScope(ownerId).llmDrafts.mark(data.slice("llm_cancel:".length), "CANCELLED", ownerId); await (bot as any).answerCallbackQuery?.(query.id, { text: "Draft cancelled" }).catch?.(() => undefined); await send(chatId, `Cancelled ${draft.id}.`); }
   }).catch(async (e: any) => { await (bot as any).answerCallbackQuery?.(query.id, { text: "LLM draft action failed" }).catch?.(() => undefined); await send(chatId, `❌ ${e?.message ?? e}`); });
 });

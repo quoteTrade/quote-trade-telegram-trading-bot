@@ -612,6 +612,59 @@ export function formatDraft(draft: LlmDraft): string {
   return [`Draft ${draft.id} (${draft.status})`, `Provider: ${draft.provider} / ${draft.model}`, `Summary: ${draft.summary}`, "Commands:", commandText, notes].filter(Boolean).join("\n");
 }
 
+export function escapeTelegramHtml(value: unknown): string {
+  return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+}
+
+function orderWord(count: number): string {
+  return count === 1 ? "order" : "orders";
+}
+
+export function confirmOrderButtonText(commandCount: number): string {
+  return commandCount === 1 ? "✅ Confirm Order" : "✅ Confirm Orders";
+}
+
+export function formatDraftForTelegramHtml(draft: LlmDraft): string {
+  const count = draft.commands.length;
+  const header = count ? `🧾 Proposed ${orderWord(count)} for review` : "🧾 Strategy draft for review";
+  const commandText = count
+      ? draft.commands.map((command, index) => {
+        const prefix = count > 1 ? `${index + 1}. ` : "";
+        return `${prefix}<b>${escapeTelegramHtml(command)}</b>`;
+      }).join("\n")
+      : "No executable commands proposed.";
+
+  const riskNotes = draft.riskNotes.length
+      ? ["", "<b>Risk notes</b>", ...draft.riskNotes.map((note) => `• ${escapeTelegramHtml(note)}`)]
+      : [];
+
+  const safetyNotes = count ? [
+    "",
+    "<b>Before confirming</b>",
+    "• The bot will validate the exact command text above.",
+    "• Confirmation creates the local order/trigger setup for your Telegram user only.",
+    "• BUY checks executable ASK depth; SELL checks executable BID depth.",
+  ] : [];
+
+  return [
+    `<b>${header}</b>`,
+    `ID: <code>${escapeTelegramHtml(draft.id)}</code>`,
+    `Provider: ${escapeTelegramHtml(draft.provider)} / ${escapeTelegramHtml(draft.model)}`,
+    "",
+    "<b>Trade</b>",
+    commandText,
+    "",
+    `<b>Summary</b>: ${escapeTelegramHtml(draft.summary)}`,
+    ...riskNotes,
+    ...safetyNotes,
+    "",
+    `Confirm with <code>/llmconfirm ${escapeTelegramHtml(draft.id)}</code> or tap the button below.`,
+  ].filter((line) => line !== undefined && line !== null).join("\n");
+}
+
 export interface ParsedPlanAction {
   action: "add" | "oco";
   description: string;

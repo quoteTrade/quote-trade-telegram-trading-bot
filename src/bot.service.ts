@@ -1,8 +1,8 @@
-import { HttpSvc } from "./utils/http.service";
-import { SubmitOrderRequest, SubmitOrderResult, toQuoteTradeSide } from "./triggers/types";
-import { PositionStore } from "./triggers/position-store";
+import { redacted, type TradingSessionStore } from "./sessions/trading-session-store";
+import type { PositionStore } from "./triggers/position-store";
 import { PositionSyncService } from "./triggers/position-sync";
-import {redacted, TradingSessionStore} from "./sessions/trading-session-store";
+import { type SubmitOrderRequest, type SubmitOrderResult, toQuoteTradeSide } from "./triggers/types";
+import { HttpSvc } from "./utils/http.service";
 
 export class BotService {
   constructor(
@@ -17,7 +17,9 @@ export class BotService {
   }
 
   private sessionForRealMode(ownerId: string): any {
-    return (process.env.MODE ?? "paper").toLowerCase() === "real" && this.sessions ? this.sessions.require(ownerId) : undefined;
+    return (process.env.MODE ?? "paper").toLowerCase() === "real" && this.sessions
+      ? this.sessions.require(ownerId)
+      : undefined;
   }
 
   private quoteTradeConfig(ownerId: string, preloadedSession?: any): any {
@@ -103,7 +105,7 @@ export class BotService {
   async refreshPositions(ownerId = this.ownerId): Promise<number> {
     const config = this.sessions ? this.quoteTradeConfig(ownerId) : {};
     const count = await new PositionSyncService(this.http, this.positions).refresh(config);
-    if (count > 0 && this.sessions) this.sessions.touchVerified(ownerId);
+    if (this.sessions) this.sessions.touchVerified(ownerId);
     return count;
   }
 }

@@ -1,4 +1,4 @@
-import { PositionStore } from "./position-store";
+import type { PositionStore } from "./position-store";
 
 export interface HttpLike {
   get(path: string, config?: any): Promise<any>;
@@ -7,16 +7,17 @@ export interface HttpLike {
 function looksLikeSinglePosition(payload: any): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
 
-  const hasSymbol = payload.symbol !== undefined || payload.s !== undefined || payload.a !== undefined || payload.asset !== undefined;
+  const hasSymbol =
+    payload.symbol !== undefined || payload.s !== undefined || payload.a !== undefined || payload.asset !== undefined;
   const hasQty =
-      payload.netQty !== undefined ||
-      payload.positionAmt !== undefined ||
-      payload.pa !== undefined ||
-      payload.quantity !== undefined ||
-      payload.qty !== undefined ||
-      payload.availableQty !== undefined ||
-      payload.availableQuantity !== undefined ||
-      payload.aq !== undefined;
+    payload.netQty !== undefined ||
+    payload.positionAmt !== undefined ||
+    payload.pa !== undefined ||
+    payload.quantity !== undefined ||
+    payload.qty !== undefined ||
+    payload.availableQty !== undefined ||
+    payload.availableQuantity !== undefined ||
+    payload.aq !== undefined;
 
   return hasSymbol && hasQty;
 }
@@ -27,11 +28,19 @@ function extractPositions(payload: any): { found: boolean; positions: any[] } {
     return { found: true, positions: payload.a.P };
   }
 
+  if (Array.isArray(payload)) return { found: true, positions: payload };
+  if (Array.isArray(payload?.positions)) return { found: true, positions: payload.positions };
+  if (Array.isArray(payload?.data)) return { found: true, positions: payload.data };
+  if (looksLikeSinglePosition(payload)) return { found: true, positions: [payload] };
+
   return { found: false, positions: [] };
 }
 
 export class PositionSyncService {
-  constructor(private http: HttpLike, private store: PositionStore) {}
+  constructor(
+    private http: HttpLike,
+    private store: PositionStore,
+  ) {}
 
   async refresh(config: any = {}): Promise<number> {
     // Use only the confirmed official endpoint.
@@ -42,6 +51,9 @@ export class PositionSyncService {
     }
 
     const payload = await this.http.get(path, config);
+    if (payload?.error || (payload?.message && payload?.success === false)) {
+      throw new Error(String(payload.error ?? payload.message));
+    }
     const extracted = extractPositions(payload);
 
     if (process.env.SESSION_DEBUG === "true") {
@@ -55,7 +67,7 @@ export class PositionSyncService {
     }
 
     if (!extracted.found) {
-      return 0;
+      throw new Error("Quote.Trade returned an unrecognized positions response");
     }
 
     // REST /positions is authoritative, so replace stale cached positions.

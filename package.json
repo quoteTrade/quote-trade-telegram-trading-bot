@@ -9,7 +9,7 @@
     "dev": "ts-node src/bot.ts",
     "build": "tsc -p .",
     "start": "node dist/bot.js",
-    "test": "npm run build && node tests/trigger-engine.test.js && node tests/order-payload.test.js && node tests/llm-planner.test.js && node tests/session-isolation.test.js && node tests/position-sync.test.js && node tests/runtime-efficiency.test.js && node tests/price-feed-shared.test.js && node tests/codex-oauth.test.js"
+    "test": "npm run build && node --test --experimental-test-coverage --test-coverage-exclude=\"tests/**\" --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 \"tests/**/*.test.js\""
   },
   "dependencies": {
     "axios": "^1.10.0",
@@ -26,5 +26,8 @@
   },
   "overrides": {
     "ws": "^8.20.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export function quoteTradeStateRoot(): string {
@@ -18,7 +18,11 @@ export function userStateDir(ownerId: string): string {
   const dir = join(usersRoot, safeOwnerKey(ownerId));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const candidate of [root, usersRoot, dir]) {
-    try { chmodSync(candidate, 0o700); } catch { /* best effort on non-POSIX filesystems */ }
+    try {
+      chmodSync(candidate, 0o700);
+    } catch {
+      /* best effort on non-POSIX filesystems */
+    }
   }
   return dir;
 }

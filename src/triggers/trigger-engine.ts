@@ -1,21 +1,21 @@
-import { PositionStore } from "./position-store";
-import { TriggerStore } from "./trigger-store";
+import type { PositionStore } from "./position-store";
+import type { TriggerStore } from "./trigger-store";
+import type { OrderSide } from "./types";
 import {
   distanceFromMode,
-  MarketTick,
+  type MarketTick,
   normalizeSymbol,
   oppositeSide,
   orderPriceForTrigger,
   orderTypeForTrigger,
-  PositionSnapshot,
+  type PositionSnapshot,
+  type SubmitOrderRequest,
   selectL2SideQuote,
   shouldTrigger,
-  SubmitOrderRequest,
-  TriggerOrder,
-  TriggerOrderExecutor,
+  type TriggerOrder,
+  type TriggerOrderExecutor,
   unrealizedPnlUsd,
 } from "./types";
-import type { OrderSide } from "./types";
 
 export interface TriggerEngineOptions {
   /** Max age for cached L2 ticks used by timer-driven order triggers. Set 0 to disable. */
@@ -150,7 +150,10 @@ export class TriggerEngine {
   }
 
   async processPositionUpdate(positionOrSymbol: PositionSnapshot | string): Promise<TriggerOrder[]> {
-    const symbol = typeof positionOrSymbol === "string" ? normalizeSymbol(positionOrSymbol) : normalizeSymbol(positionOrSymbol.symbol);
+    const symbol =
+      typeof positionOrSymbol === "string"
+        ? normalizeSymbol(positionOrSymbol)
+        : normalizeSymbol(positionOrSymbol.symbol);
     const changed: TriggerOrder[] = [];
 
     for (const parent of this.store.list({ symbol })) {
@@ -178,7 +181,11 @@ export class TriggerEngine {
     return changed;
   }
 
-  resolveOrder(trigger: TriggerOrder, marketPrice: number, precheckedIntent?: OrderIntent): SubmitOrderRequest | string {
+  resolveOrder(
+    trigger: TriggerOrder,
+    marketPrice: number,
+    precheckedIntent?: OrderIntent,
+  ): SubmitOrderRequest | string {
     const intent = precheckedIntent ?? this.resolveOrderIntent(trigger);
     if (typeof intent === "string") return intent;
 
@@ -200,7 +207,6 @@ export class TriggerEngine {
       clientOrderId: `qt_${trigger.id}`,
     };
   }
-
 
   private maxTickAgeMs(): number {
     const configured = this.options.maxTickAgeMs ?? Number(process.env.TRIGGER_MAX_L2_AGE_MS ?? 5000);
@@ -323,12 +329,15 @@ export class TriggerEngine {
     const entry = position?.avgEntryPrice;
     if (!entry || entry <= 0) return {};
 
-    const closeSide = trigger.closePosition ? this.positions.getCloseSide(trigger.symbol) ?? trigger.side : trigger.side;
+    const closeSide = trigger.closePosition
+      ? (this.positions.getCloseSide(trigger.symbol) ?? trigger.side)
+      : trigger.side;
     const activationDistance = distanceFromMode(entry, trigger.activationMode, trigger.activationValue);
     const lockDistance = distanceFromMode(entry, trigger.lockMode, trigger.lockValue ?? 0);
     const activationPrice = closeSide === "SELL" ? entry + activationDistance : entry - activationDistance;
     const stopPrice = closeSide === "SELL" ? entry + lockDistance : entry - lockDistance;
-    const armed = trigger.breakEvenArmed || (closeSide === "SELL" ? price >= activationPrice : price <= activationPrice);
+    const armed =
+      trigger.breakEvenArmed || (closeSide === "SELL" ? price >= activationPrice : price <= activationPrice);
 
     if (!armed) {
       return { side: closeSide, breakEvenArmed: false, meta: { ...(trigger.meta ?? {}), activationPrice } };
@@ -375,7 +384,11 @@ export class TriggerEngine {
       latest = this.recordBracketEntrySubmission(latest);
       const order = this.resolveOrder(latest, marketPrice, precheckedIntent);
       if (typeof order === "string") {
-        this.store.setStatus(latest.id, "REJECTED", { error: order, firedAt: Date.now(), lastCheckedPrice: marketPrice });
+        this.store.setStatus(latest.id, "REJECTED", {
+          error: order,
+          firedAt: Date.now(),
+          lastCheckedPrice: marketPrice,
+        });
         this.options.onReject?.(latest, order);
         return;
       }
@@ -401,19 +414,24 @@ export class TriggerEngine {
           result,
         });
       }
-      const fired = this.store.setStatus(latest.id, "TRIGGERED", {
-        orderId: result.orderId,
-        clientOrderId: result.clientOrderId,
-        firedAt: submittedAt,
-        lastCheckedPrice: marketPrice,
-      }) ?? latest;
+      const fired =
+        this.store.setStatus(latest.id, "TRIGGERED", {
+          orderId: result.orderId,
+          clientOrderId: result.clientOrderId,
+          firedAt: submittedAt,
+          lastCheckedPrice: marketPrice,
+        }) ?? latest;
 
       const cancelled = this.store.cancelOcoSiblings(fired.ocoGroupId, fired.id);
       if (cancelled.length) this.options.onAction?.(fired, `Cancelled ${cancelled.length} OCO sibling trigger(s).`);
       this.options.onTrigger?.(fired, order);
     } catch (error: any) {
       const message = error?.message ?? String(error);
-      this.store.setStatus(latest.id, "REJECTED", { error: message, firedAt: Date.now(), lastCheckedPrice: marketPrice });
+      this.store.setStatus(latest.id, "REJECTED", {
+        error: message,
+        firedAt: Date.now(),
+        lastCheckedPrice: marketPrice,
+      });
       this.options.onError?.(latest, error);
     } finally {
       this.firing.delete(trigger.id);
@@ -423,13 +441,15 @@ export class TriggerEngine {
   private recordBracketEntrySubmission(trigger: TriggerOrder): TriggerOrder {
     if (!trigger.meta?.bracket || trigger.meta.bracketEntrySubmittedAt) return trigger;
     const netQtyBefore = this.positions.get(trigger.symbol)?.netQty ?? 0;
-    return this.store.update(trigger.id, {
-      meta: {
-        ...(trigger.meta ?? {}),
-        bracketEntrySubmittedAt: Date.now(),
-        bracketEntryNetQtyBefore: netQtyBefore,
-      },
-    }) ?? trigger;
+    return (
+      this.store.update(trigger.id, {
+        meta: {
+          ...(trigger.meta ?? {}),
+          bracketEntrySubmittedAt: Date.now(),
+          bracketEntryNetQtyBefore: netQtyBefore,
+        },
+      }) ?? trigger
+    );
   }
 
   private fireTimeCancel(trigger: TriggerOrder, marketPrice: number): void {
@@ -466,9 +486,8 @@ export class TriggerEngine {
 
     const before = Number(parent.meta?.bracketEntryNetQtyBefore ?? 0);
     const after = position.netQty;
-    const opened = parent.side === "BUY"
-      ? Math.max(0, after) - Math.max(0, before)
-      : Math.max(0, -after) - Math.max(0, -before);
+    const opened =
+      parent.side === "BUY" ? Math.max(0, after) - Math.max(0, before) : Math.max(0, -after) - Math.max(0, -before);
     if (opened <= 0) return 0;
 
     const target = positiveNumber(parent.quantity);
@@ -505,12 +524,15 @@ export class TriggerEngine {
     };
 
     const stopLimitPrice = positiveNumber(bracket.stopLimitPrice);
-    const children = this.store.addOco([
-      { ...common, kind: "TAKE_PROFIT", triggerPrice: takeProfitPrice },
-      stopLimitPrice
-        ? { ...common, kind: "STOP_LIMIT", triggerPrice: stopLossPrice, limitPrice: stopLimitPrice }
-        : { ...common, kind: "STOP_LOSS", triggerPrice: stopLossPrice },
-    ] as any[], groupId);
+    const children = this.store.addOco(
+      [
+        { ...common, kind: "TAKE_PROFIT", triggerPrice: takeProfitPrice },
+        stopLimitPrice
+          ? { ...common, kind: "STOP_LIMIT", triggerPrice: stopLossPrice, limitPrice: stopLimitPrice }
+          : { ...common, kind: "STOP_LOSS", triggerPrice: stopLossPrice },
+      ] as any[],
+      groupId,
+    );
 
     this.store.update(parent.id, { meta: { ...(parent.meta ?? {}), bracketChildrenCreated: true } });
     this.options.onAction?.(parent, `Bracket exits armed for ${parent.symbol} after position update.`);

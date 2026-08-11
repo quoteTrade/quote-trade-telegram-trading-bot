@@ -10,12 +10,12 @@ import {
   normalizeSide,
   normalizeSymbol,
   normalizeTriggerSource,
-  RiskAction,
-  RiskMetric,
-  TriggerInput,
-  TriggerKind,
-  TriggerOrder,
-  TriggerStatus,
+  type RiskAction,
+  type RiskMetric,
+  type TriggerInput,
+  type TriggerKind,
+  type TriggerOrder,
+  type TriggerStatus,
 } from "./types";
 
 export interface TriggerStoreUpdateOptions {
@@ -36,24 +36,11 @@ const SUPPORTED_TRIGGER_KINDS = new Set<TriggerKind>([
   "PRICE_BAND",
 ]);
 
-const PRICE_TRIGGER_KINDS = new Set<TriggerKind>([
-  "LIMIT",
-  "STOP_LIMIT",
-  "TAKE_PROFIT",
-  "STOP_LOSS",
-]);
+const PRICE_TRIGGER_KINDS = new Set<TriggerKind>(["LIMIT", "STOP_LIMIT", "TAKE_PROFIT", "STOP_LOSS"]);
 
-const RISK_METRICS = new Set<RiskMetric>([
-  "MAX_POSITION_QTY",
-  "MAX_RISK_USD",
-  "MAX_LOSS_USD",
-]);
+const RISK_METRICS = new Set<RiskMetric>(["MAX_POSITION_QTY", "MAX_RISK_USD", "MAX_LOSS_USD"]);
 
-const RISK_ACTIONS = new Set<RiskAction>([
-  "ALERT",
-  "CLOSE_POSITION",
-  "CANCEL_TRIGGERS",
-]);
+const RISK_ACTIONS = new Set<RiskAction>(["ALERT", "CLOSE_POSITION", "CANCEL_TRIGGERS"]);
 
 function defaultDataFile(name: string): string {
   return join(process.env.QUOTE_TRADE_STATE_DIR || join(process.cwd(), ".quote-trade"), name);
@@ -73,7 +60,11 @@ function writeJsonFile(filePath: string, data: unknown): void {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   renameSync(tmp, filePath);
-  try { chmodSync(filePath, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    /* best effort on non-POSIX filesystems */
+  }
 }
 
 function hasChanged(current: TriggerOrder, patch: Partial<TriggerOrder>): boolean {
@@ -87,13 +78,22 @@ function isOrderSubmittingKind(kind: TriggerKind): boolean {
 function needsL2MarketData(trigger: TriggerOrder): boolean {
   if (trigger.kind === "TIME_CANCEL") return false;
   if (trigger.kind === "RISK_GUARD") {
-    return trigger.riskAction === "CLOSE_POSITION" || trigger.riskMetric === "MAX_RISK_USD" || trigger.riskMetric === "MAX_LOSS_USD";
+    return (
+      trigger.riskAction === "CLOSE_POSITION" ||
+      trigger.riskMetric === "MAX_RISK_USD" ||
+      trigger.riskMetric === "MAX_LOSS_USD"
+    );
   }
   return true;
 }
 
 function isPendingBracketEntry(trigger: TriggerOrder): boolean {
-  return trigger.status === "TRIGGERED" && !!trigger.meta?.bracket && !!trigger.meta?.bracketEntrySubmittedAt && !trigger.meta?.bracketChildrenCreated;
+  return (
+    trigger.status === "TRIGGERED" &&
+    !!trigger.meta?.bracket &&
+    !!trigger.meta?.bracketEntrySubmittedAt &&
+    !trigger.meta?.bracketChildrenCreated
+  );
 }
 
 function needsAccountData(trigger: TriggerOrder): boolean {
@@ -106,13 +106,19 @@ function needsAccountData(trigger: TriggerOrder): boolean {
 }
 
 function normalizeRiskMetric(metric: unknown): RiskMetric {
-  const value = String(metric ?? "").trim().toUpperCase().replace(/-/g, "_") as RiskMetric;
+  const value = String(metric ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/-/g, "_") as RiskMetric;
   if (!RISK_METRICS.has(value)) throw new Error("riskMetric must be MAX_POSITION_QTY, MAX_RISK_USD, or MAX_LOSS_USD");
   return value;
 }
 
 function normalizeRiskAction(action: unknown): RiskAction {
-  const value = String(action ?? "").trim().toUpperCase().replace(/-/g, "_") as RiskAction;
+  const value = String(action ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/-/g, "_") as RiskAction;
   if (!RISK_ACTIONS.has(value)) throw new Error("riskAction must be ALERT, CLOSE_POSITION, or CANCEL_TRIGGERS");
   return value;
 }
@@ -150,19 +156,25 @@ export class TriggerStore {
 
     const now = Date.now();
     const side = normalizeSide(String(input.side));
-    const triggerPrice = input.triggerPrice === undefined ? undefined : assertPositiveNumber(input.triggerPrice, "triggerPrice");
-    const limitPrice = input.limitPrice === undefined ? undefined : assertPositiveNumber(input.limitPrice, "limitPrice");
+    const triggerPrice =
+      input.triggerPrice === undefined ? undefined : assertPositiveNumber(input.triggerPrice, "triggerPrice");
+    const limitPrice =
+      input.limitPrice === undefined ? undefined : assertPositiveNumber(input.limitPrice, "limitPrice");
     const quantity = input.quantity === undefined ? undefined : assertPositiveNumber(input.quantity, "quantity");
-    const closePercentage = input.closePercentage === undefined ? undefined : assertPercentage(input.closePercentage, "closePercentage");
+    const closePercentage =
+      input.closePercentage === undefined ? undefined : assertPercentage(input.closePercentage, "closePercentage");
     const closePosition = input.closePosition === true;
 
-    if (PRICE_TRIGGER_KINDS.has(input.kind) && triggerPrice === undefined) throw new Error(`${input.kind} requires triggerPrice`);
-    if (input.kind === "STOP_LIMIT" && limitPrice === undefined) throw new Error("limitPrice is required for STOP_LIMIT triggers");
+    if (PRICE_TRIGGER_KINDS.has(input.kind) && triggerPrice === undefined)
+      throw new Error(`${input.kind} requires triggerPrice`);
+    if (input.kind === "STOP_LIMIT" && limitPrice === undefined)
+      throw new Error("limitPrice is required for STOP_LIMIT triggers");
 
     if (input.kind === "TRAILING_STOP" || input.kind === "TRAILING_STOP_LIMIT") {
       if (input.trailValue === undefined) throw new Error(`${input.kind} requires trailValue`);
       assertPositiveNumber(input.trailValue, "trailValue");
-      if (input.kind === "TRAILING_STOP_LIMIT" && input.limitOffset !== undefined) assertNonNegativeNumber(input.limitOffset, "limitOffset");
+      if (input.kind === "TRAILING_STOP_LIMIT" && input.limitOffset !== undefined)
+        assertNonNegativeNumber(input.limitOffset, "limitOffset");
     }
 
     if (input.kind === "BREAK_EVEN_STOP") {
@@ -180,15 +192,18 @@ export class TriggerStore {
 
     if (input.kind === "PRICE_BAND") {
       if (!input.priceBandMode) throw new Error("PRICE_BAND requires priceBandMode");
-      if (input.priceBandMode !== "BREAKOUT" && input.priceBandMode !== "REVERSION") throw new Error("priceBandMode must be BREAKOUT or REVERSION");
+      if (input.priceBandMode !== "BREAKOUT" && input.priceBandMode !== "REVERSION")
+        throw new Error("priceBandMode must be BREAKOUT or REVERSION");
       const needsUpper =
         (input.priceBandMode === "BREAKOUT" && side === "BUY") ||
         (input.priceBandMode === "REVERSION" && side === "SELL");
       const needsLower =
         (input.priceBandMode === "BREAKOUT" && side === "SELL") ||
         (input.priceBandMode === "REVERSION" && side === "BUY");
-      if (needsUpper && input.upperPrice === undefined) throw new Error("PRICE_BAND requires upperPrice for this side/mode");
-      if (needsLower && input.lowerPrice === undefined) throw new Error("PRICE_BAND requires lowerPrice for this side/mode");
+      if (needsUpper && input.upperPrice === undefined)
+        throw new Error("PRICE_BAND requires upperPrice for this side/mode");
+      if (needsLower && input.lowerPrice === undefined)
+        throw new Error("PRICE_BAND requires lowerPrice for this side/mode");
     }
 
     const riskMetric = input.kind === "RISK_GUARD" ? normalizeRiskMetric(input.riskMetric) : input.riskMetric;
@@ -197,7 +212,8 @@ export class TriggerStore {
 
     if (isOrderSubmittingKind(input.kind)) {
       const canResolveFromPosition = closePosition || closePercentage !== undefined || input.kind === "RISK_GUARD";
-      if (!canResolveFromPosition && quantity === undefined) throw new Error("quantity is required unless closePosition or closePercentage is set");
+      if (!canResolveFromPosition && quantity === undefined)
+        throw new Error("quantity is required unless closePosition or closePercentage is set");
     }
 
     const trigger: TriggerOrder = {
@@ -229,7 +245,8 @@ export class TriggerStore {
       activationValue: input.activationValue,
       lockMode: input.lockMode ? normalizeAmountMode(input.lockMode) : undefined,
       lockValue: input.lockValue,
-      limitOffset: input.limitOffset === undefined ? undefined : assertNonNegativeNumber(input.limitOffset, "limitOffset"),
+      limitOffset:
+        input.limitOffset === undefined ? undefined : assertNonNegativeNumber(input.limitOffset, "limitOffset"),
       lowerPrice: input.lowerPrice === undefined ? undefined : assertPositiveNumber(input.lowerPrice, "lowerPrice"),
       upperPrice: input.upperPrice === undefined ? undefined : assertPositiveNumber(input.upperPrice, "upperPrice"),
       priceBandMode: input.priceBandMode,
@@ -279,7 +296,7 @@ export class TriggerStore {
 
   cancel(id: string): TriggerOrder | undefined {
     const current = this.triggers.get(id);
-    if (!current || current.status !== "ACTIVE") return undefined;
+    if (current?.status !== "ACTIVE") return undefined;
     return this.setStatus(id, "CANCELLED");
   }
 
@@ -333,9 +350,13 @@ export class TriggerStore {
   }
 
   watchableSymbols(): string[] {
-    return [...new Set(this.active()
-      .filter(needsL2MarketData)
-      .map((trigger) => trigger.symbol))].sort();
+    return [
+      ...new Set(
+        this.active()
+          .filter(needsL2MarketData)
+          .map((trigger) => trigger.symbol),
+      ),
+    ].sort();
   }
 
   needsAccountData(): boolean {

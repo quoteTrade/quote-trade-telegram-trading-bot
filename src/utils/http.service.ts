@@ -1,5 +1,5 @@
-import axios from "axios";
 import { createHmac, createPrivateKey, sign as nodeSign } from "node:crypto";
+import axios from "axios";
 import type { SigningAlgorithm } from "../sessions/trading-session-store";
 
 export interface QuoteTradeCredentials {
@@ -17,7 +17,9 @@ interface HttpConfigWithCredentials {
 }
 
 function normalizeSigningAlgorithm(raw?: string): "sha256" | "ed25519" {
-  const value = String(raw ?? process.env.SIGNING_ALGORITHM ?? "sha256").trim().toLowerCase();
+  const value = String(raw ?? process.env.SIGNING_ALGORITHM ?? "sha256")
+    .trim()
+    .toLowerCase();
   return value === "ed25519" ? "ed25519" : "sha256";
 }
 
@@ -40,6 +42,11 @@ function sanitizeConfig(config: HttpConfigWithCredentials = {}): Record<string, 
   return rest;
 }
 
+function positiveMs(raw: unknown, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 class HttpService {
   private readonly apiUrl = `${process.env.API_BASE_URL ?? ""}`.replace(/\/$/, "");
 
@@ -60,15 +67,41 @@ class HttpService {
 
   async get(path: string, config: HttpConfigWithCredentials = {}): Promise<any> {
     const safeConfig = sanitizeConfig(config);
-    const response = await axios.get(this.full(path), { ...safeConfig, headers: this.headers(path, config) });
-    return response.data;
+    const timeout = safeConfig.timeout ?? positiveMs(process.env.QUOTE_TRADE_GET_TIMEOUT_MS, 15_000);
+    const startedAt = Date.now();
+    try {
+      const response = await axios.get(this.full(path), {
+        ...safeConfig,
+        timeout,
+        headers: this.headers(path, config),
+      });
+      return response.data;
+    } finally {
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= positiveMs(process.env.SLOW_REQUEST_LOG_MS, 2_000)) {
+        console.warn("[SLOW_QUOTE_TRADE_REQUEST]", { method: "GET", path, elapsedMs });
+      }
+    }
   }
 
   async post(path: string, body: any = {}, config: HttpConfigWithCredentials = {}): Promise<any> {
     const payload = JSON.stringify({ ...body, channel: body.channel ?? "LIQUIDITY" });
     const safeConfig = sanitizeConfig(config);
-    const response = await axios.post(this.full(path), JSON.parse(payload), { ...safeConfig, headers: this.headers(payload, config) });
-    return response.data;
+    const timeout = safeConfig.timeout ?? positiveMs(process.env.QUOTE_TRADE_POST_TIMEOUT_MS, 35_000);
+    const startedAt = Date.now();
+    try {
+      const response = await axios.post(this.full(path), JSON.parse(payload), {
+        ...safeConfig,
+        timeout,
+        headers: this.headers(payload, config),
+      });
+      return response.data;
+    } finally {
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= positiveMs(process.env.SLOW_REQUEST_LOG_MS, 2_000)) {
+        console.warn("[SLOW_QUOTE_TRADE_REQUEST]", { method: "POST", path, elapsedMs });
+      }
+    }
   }
 }
 

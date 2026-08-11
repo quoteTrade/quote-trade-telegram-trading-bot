@@ -154,23 +154,36 @@ export interface SubmitOrderRequest {
   /** Local id only. Do not add trigger metadata to the Quote.Trade API body. */
   clientOrderId?: string;
 }
-export interface SubmitOrderResult { orderId?: string; clientOrderId?: string; raw?: unknown; paper?: boolean; }
-export interface TriggerOrderExecutor { submitOrder(req: SubmitOrderRequest): Promise<SubmitOrderResult>; }
+export interface SubmitOrderResult {
+  orderId?: string;
+  clientOrderId?: string;
+  raw?: unknown;
+  paper?: boolean;
+}
+export interface TriggerOrderExecutor {
+  submitOrder(req: SubmitOrderRequest): Promise<SubmitOrderResult>;
+}
 
 export function normalizeSymbol(symbol: string): string {
-  const cleaned = String(symbol ?? "").trim().toUpperCase();
+  const cleaned = String(symbol ?? "")
+    .trim()
+    .toUpperCase();
   if (!cleaned) throw new Error("symbol is required");
   return cleaned;
 }
 
 export function normalizeSide(side: string): OrderSide {
-  const s = String(side ?? "").trim().toUpperCase();
+  const s = String(side ?? "")
+    .trim()
+    .toUpperCase();
   if (["BUY", "BID", "1"].includes(s)) return "BUY";
   if (["SELL", "SEL", "ASK", "2"].includes(s)) return "SELL";
   throw new Error(`side must be BUY or SELL, got: ${side}`);
 }
 
-export function toQuoteTradeSide(side: OrderSide): ApiOrderSide { return side === "SELL" ? "SEL" : "BUY"; }
+export function toQuoteTradeSide(side: OrderSide): ApiOrderSide {
+  return side === "SELL" ? "SEL" : "BUY";
+}
 
 export function assertPositiveNumber(value: unknown, name: string): number {
   const n = typeof value === "number" ? value : Number(value);
@@ -205,7 +218,9 @@ export function normalizeTriggerSource(_value?: string): TriggerPriceSource {
 }
 
 export function normalizeAmountMode(value?: string): AmountMode {
-  const mode = String(value ?? "AMOUNT").trim().toUpperCase();
+  const mode = String(value ?? "AMOUNT")
+    .trim()
+    .toUpperCase();
   if (mode === "AMOUNT" || mode === "PERCENT") return mode;
   throw new Error("amount mode must be AMOUNT or PERCENT");
 }
@@ -225,7 +240,9 @@ export function distanceFromMode(referencePrice: number, mode: AmountMode = "AMO
 }
 
 export function parseDurationMs(raw: string): number {
-  const text = String(raw ?? "").trim().toLowerCase();
+  const text = String(raw ?? "")
+    .trim()
+    .toLowerCase();
   const m = text.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/);
   if (!m) throw new Error("duration must look like 30s, 15m, 4h, or 1d");
   const n = assertPositiveNumber(m[1], "duration");
@@ -249,31 +266,44 @@ export function sideToClosePosition(netQty: number): OrderSide | undefined {
   return undefined;
 }
 
-export function oppositeSide(side: OrderSide): OrderSide { return side === "BUY" ? "SELL" : "BUY"; }
+export function oppositeSide(side: OrderSide): OrderSide {
+  return side === "BUY" ? "SELL" : "BUY";
+}
 
-export function deriveTriggerDirection(trigger: Pick<TriggerOrder, "kind" | "side" | "priceBandMode">): TriggerDirection | undefined {
+export function deriveTriggerDirection(
+  trigger: Pick<TriggerOrder, "kind" | "side" | "priceBandMode">,
+): TriggerDirection | undefined {
   switch (trigger.kind) {
-    case "LIMIT": return trigger.side === "BUY" ? "BELOW" : "ABOVE";
-    case "STOP_LIMIT": return trigger.side === "BUY" ? "ABOVE" : "BELOW";
-    case "TAKE_PROFIT": return trigger.side === "BUY" ? "BELOW" : "ABOVE";
-    case "STOP_LOSS": return trigger.side === "BUY" ? "ABOVE" : "BELOW";
+    case "LIMIT":
+      return trigger.side === "BUY" ? "BELOW" : "ABOVE";
+    case "STOP_LIMIT":
+      return trigger.side === "BUY" ? "ABOVE" : "BELOW";
+    case "TAKE_PROFIT":
+      return trigger.side === "BUY" ? "BELOW" : "ABOVE";
+    case "STOP_LOSS":
+      return trigger.side === "BUY" ? "ABOVE" : "BELOW";
     case "TRAILING_STOP":
     case "TRAILING_STOP_LIMIT":
-    case "BREAK_EVEN_STOP": return trigger.side === "BUY" ? "ABOVE" : "BELOW";
+    case "BREAK_EVEN_STOP":
+      return trigger.side === "BUY" ? "ABOVE" : "BELOW";
     case "PRICE_BAND": {
       const mode = trigger.priceBandMode ?? "BREAKOUT";
       if (mode === "BREAKOUT") return trigger.side === "BUY" ? "ABOVE" : "BELOW";
       return trigger.side === "BUY" ? "BELOW" : "ABOVE";
     }
-    default: return undefined;
+    default:
+      return undefined;
   }
 }
 
 export function priceTargetForTrigger(trigger: TriggerOrder): number | undefined {
-  if (trigger.kind === "TRAILING_STOP" || trigger.kind === "TRAILING_STOP_LIMIT" || trigger.kind === "BREAK_EVEN_STOP") return trigger.currentStopPrice ?? trigger.triggerPrice;
+  if (trigger.kind === "TRAILING_STOP" || trigger.kind === "TRAILING_STOP_LIMIT" || trigger.kind === "BREAK_EVEN_STOP")
+    return trigger.currentStopPrice ?? trigger.triggerPrice;
   if (trigger.kind === "PRICE_BAND") {
     const dir = deriveTriggerDirection(trigger);
-    return dir === "ABOVE" ? trigger.upperPrice ?? trigger.triggerPrice : trigger.lowerPrice ?? trigger.triggerPrice;
+    return dir === "ABOVE"
+      ? (trigger.upperPrice ?? trigger.triggerPrice)
+      : (trigger.lowerPrice ?? trigger.triggerPrice);
   }
   return trigger.triggerPrice;
 }
@@ -346,23 +376,21 @@ function levelFromRaw(raw: any): L2PriceLevel | undefined {
 
 function levelsFromBook(tick: MarketTick, side: "ask" | "bid"): L2PriceLevel[] {
   const book: any = (tick.orderBook as any)?.data ?? tick.orderBook ?? {};
-  const rawLevels = side === "ask"
-    ? (book.asks ?? book.a ?? book.sell ?? book.sells)
-    : (book.bids ?? book.b ?? book.buy ?? book.buys);
+  const rawLevels =
+    side === "ask" ? (book.asks ?? book.a ?? book.sell ?? book.sells) : (book.bids ?? book.b ?? book.buy ?? book.buys);
 
-  const levels = Array.isArray(rawLevels)
-    ? rawLevels.map(levelFromRaw).filter(Boolean) as L2PriceLevel[]
-    : [];
+  const levels = Array.isArray(rawLevels) ? (rawLevels.map(levelFromRaw).filter(Boolean) as L2PriceLevel[]) : [];
 
   if (!levels.length) {
     const price = side === "ask" ? toPositiveNumber(tick.ask) : toPositiveNumber(tick.bid);
-    const quantity = side === "ask"
-      ? toPositiveNumber(tick.askQty, tick.askQuantity)
-      : toPositiveNumber(tick.bidQty, tick.bidQuantity);
+    const quantity =
+      side === "ask"
+        ? toPositiveNumber(tick.askQty, tick.askQuantity)
+        : toPositiveNumber(tick.bidQty, tick.bidQuantity);
     if (price && quantity) levels.push({ price, quantity });
   }
 
-  levels.sort((a, b) => side === "ask" ? a.price - b.price : b.price - a.price);
+  levels.sort((a, b) => (side === "ask" ? a.price - b.price : b.price - a.price));
   return levels;
 }
 
@@ -396,8 +424,16 @@ export function selectL2SideQuote(tick: MarketTick, side: OrderSide, quantity: n
 }
 
 export function unrealizedPnlUsd(position?: PositionSnapshot): number {
-  if (!position || !Number.isFinite(position.netQty) || !Number.isFinite(position.avgEntryPrice as number) || !Number.isFinite(position.markPrice as number)) return 0;
+  if (
+    !position ||
+    !Number.isFinite(position.netQty) ||
+    !Number.isFinite(position.avgEntryPrice as number) ||
+    !Number.isFinite(position.markPrice as number)
+  )
+    return 0;
   return position.netQty * ((position.markPrice as number) - (position.avgEntryPrice as number));
 }
 
-export function formatUsd(value: number): string { return Number.isFinite(value) ? `$${value.toFixed(2)}` : "$0.00"; }
+export function formatUsd(value: number): string {
+  return Number.isFinite(value) ? `$${value.toFixed(2)}` : "$0.00";
+}

@@ -1,16 +1,16 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { decryptSecret, encryptSecret } from "../sessions/trading-session-store";
 import {
-  TriggerInput,
   normalizeSide,
   normalizeSymbol,
+  type PriceBandMode,
   parseAmountOrPercent,
   parseTimeOrDuration,
-  PriceBandMode,
-  RiskAction,
-  RiskMetric,
+  type RiskAction,
+  type RiskMetric,
+  type TriggerInput,
 } from "../triggers/types";
-import { decryptSecret, encryptSecret } from "../sessions/trading-session-store";
 import { completeCodexOAuthPlan, hasCodexOAuthSession } from "./codex-oauth";
 
 export type LlmProviderId =
@@ -90,7 +90,14 @@ export interface LlmProviderListRow {
   fallback: boolean;
 }
 
-export const FREE_FALLBACK_ORDER: LlmProviderId[] = ["ovhcloud", "gemini", "openrouter", "groq", "huggingface", "pollinations"];
+export const FREE_FALLBACK_ORDER: LlmProviderId[] = [
+  "ovhcloud",
+  "gemini",
+  "openrouter",
+  "groq",
+  "huggingface",
+  "pollinations",
+];
 
 export const LLM_PROVIDER_DEFAULTS: Record<LlmProviderId, LlmProviderDefaults> = {
   openai: {
@@ -223,7 +230,9 @@ export function redactedSecret(value?: string): string {
 }
 
 export function normalizeLlmProvider(raw: string): LlmProviderId {
-  const provider = String(raw ?? "").trim().toLowerCase();
+  const provider = String(raw ?? "")
+    .trim()
+    .toLowerCase();
   if (provider === "chatgpt" || provider === "gpt") return "openai";
   if (provider === "claude") return "anthropic";
   if (provider === "grok") return "xai";
@@ -233,7 +242,7 @@ export function normalizeLlmProvider(raw: string): LlmProviderId {
   if (provider === "pollinations-ai") return "pollinations";
   if (provider === "custom" || provider === "openai-compatible") return "custom-openai";
   if (["codex", "openai-codex", "chatgpt-pro", "chatgpt-codex", "gpt-pro"].includes(provider)) return "codex-oauth";
-  if (Object.prototype.hasOwnProperty.call(LLM_PROVIDER_DEFAULTS, provider)) return provider as LlmProviderId;
+  if (Object.hasOwn(LLM_PROVIDER_DEFAULTS, provider)) return provider as LlmProviderId;
   throw new Error(`Unsupported LLM provider: ${raw}`);
 }
 
@@ -243,12 +252,17 @@ function providerDefaults(provider: string): LlmProviderDefaults {
 
 function resolveKey(connection: LlmConnection): { key?: string; source?: "stored" | "env" } {
   if (connection.apiKeyEncrypted) {
-    try { return { key: decryptSecret(connection.apiKeyEncrypted), source: "stored" }; }
-    catch { /* Continue to env fallback if the local encryption key was rotated. */ }
+    try {
+      return { key: decryptSecret(connection.apiKeyEncrypted), source: "stored" };
+    } catch {
+      /* Continue to env fallback if the local encryption key was rotated. */
+    }
   }
   if (connection.apiKey) return { key: connection.apiKey, source: "stored" };
   const defaults = providerDefaults(connection.provider);
-  const envs = [connection.apiKeyEnv, defaults.defaultApiKeyEnv, ...(defaults.alternateApiKeyEnvs ?? [])].filter(Boolean) as string[];
+  const envs = [connection.apiKeyEnv, defaults.defaultApiKeyEnv, ...(defaults.alternateApiKeyEnvs ?? [])].filter(
+    Boolean,
+  ) as string[];
   for (const name of envs) {
     const key = env(name);
     if (key) return { key, source: "env" };
@@ -282,7 +296,9 @@ export class LlmConfigStore {
     const config = {
       version: 1 as const,
       defaultsByOwner: parsed.defaultsByOwner ?? {},
-      fallbackOrder: Array.isArray(parsed.fallbackOrder) ? parsed.fallbackOrder.map(normalizeLlmProvider) : FREE_FALLBACK_ORDER,
+      fallbackOrder: Array.isArray(parsed.fallbackOrder)
+        ? parsed.fallbackOrder.map(normalizeLlmProvider)
+        : FREE_FALLBACK_ORDER,
       connections: rawConnections.map((raw: any) => this.clean(raw)).filter(Boolean) as LlmConnection[],
     };
     if (rawConnections.some((raw: any) => raw?.apiKey && !raw?.apiKeyEncrypted)) this.save(config);
@@ -291,11 +307,19 @@ export class LlmConfigStore {
 
   save(config: LlmConfigFile): void {
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-    try { chmodSync(dirname(this.file), 0o700); } catch { /* best effort on non-POSIX filesystems */ }
+    try {
+      chmodSync(dirname(this.file), 0o700);
+    } catch {
+      /* best effort on non-POSIX filesystems */
+    }
     const tempFile = `${this.file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     writeFileSync(tempFile, JSON.stringify(config, null, 2), { mode: 0o600 });
     renameSync(tempFile, this.file);
-    try { chmodSync(this.file, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+    try {
+      chmodSync(this.file, 0o600);
+    } catch {
+      /* best effort on non-POSIX filesystems */
+    }
   }
 
   setConnection(input: LlmConnectionInput): LlmConnection {
@@ -308,16 +332,26 @@ export class LlmConfigStore {
       ownerId,
       provider,
       model: String(input.model ?? old?.model ?? defaults.defaultModel).trim(),
-      apiKeyEncrypted: input.apiKey !== undefined ? encryptSecret(String(input.apiKey).trim()) : input.apiKeyEnv !== undefined ? undefined : old?.apiKeyEncrypted,
-      apiKeyEnv: input.apiKeyEnv !== undefined ? String(input.apiKeyEnv).trim() : old?.apiKeyEnv ?? defaults.defaultApiKeyEnv,
-      baseUrl: input.baseUrl !== undefined ? String(input.baseUrl).trim().replace(/\/$/, "") : old?.baseUrl ?? defaults.defaultBaseUrl,
+      apiKeyEncrypted:
+        input.apiKey !== undefined
+          ? encryptSecret(String(input.apiKey).trim())
+          : input.apiKeyEnv !== undefined
+            ? undefined
+            : old?.apiKeyEncrypted,
+      apiKeyEnv:
+        input.apiKeyEnv !== undefined ? String(input.apiKeyEnv).trim() : (old?.apiKeyEnv ?? defaults.defaultApiKeyEnv),
+      baseUrl:
+        input.baseUrl !== undefined
+          ? String(input.baseUrl).trim().replace(/\/$/, "")
+          : (old?.baseUrl ?? defaults.defaultBaseUrl),
       enabled: input.enabled ?? old?.enabled ?? true,
       useAsFallback: input.useAsFallback ?? old?.useAsFallback ?? !!defaults.freeFallbackCandidate,
       createdAt: old?.createdAt ?? now(),
       updatedAt: now(),
     };
 
-    if (connection.provider === "custom-openai" && !connection.baseUrl) throw new Error("custom-openai requires --base-url");
+    if (connection.provider === "custom-openai" && !connection.baseUrl)
+      throw new Error("custom-openai requires --base-url");
     if (!connection.model) throw new Error(`${provider} requires a model`);
 
     config.connections = config.connections.filter((item) => !(item.ownerId === ownerId && item.provider === provider));
@@ -343,8 +377,24 @@ export class LlmConfigStore {
         displayName: providerDefaults(connection.provider).displayName,
         model: connection.model,
         baseUrl: resolved.effectiveBaseUrl,
-        key: isCodex ? (codexConnected ? "oauth:connected" : "run /codexconnect") : resolved.effectiveApiKey ? `${resolved.keySource}:${redactedSecret(resolved.effectiveApiKey)}` : anonymous ? "anonymous/free-tier" : "missing",
-        source: isCodex ? (codexConnected ? "oauth" : "missing") : resolved.effectiveApiKey ? resolved.source : anonymous ? "anonymous" : "missing",
+        key: isCodex
+          ? codexConnected
+            ? "oauth:connected"
+            : "run /codexconnect"
+          : resolved.effectiveApiKey
+            ? `${resolved.keySource}:${redactedSecret(resolved.effectiveApiKey)}`
+            : anonymous
+              ? "anonymous/free-tier"
+              : "missing",
+        source: isCodex
+          ? codexConnected
+            ? "oauth"
+            : "missing"
+          : resolved.effectiveApiKey
+            ? resolved.source
+            : anonymous
+              ? "anonymous"
+              : "missing",
         enabled: connection.enabled && (codexConnected || anonymous || !!resolved.effectiveApiKey),
         default: config.defaultsByOwner[actualOwner] === connection.provider,
         fallback: connection.useAsFallback,
@@ -363,8 +413,24 @@ export class LlmConfigStore {
         displayName: defaults.displayName,
         model: defaults.defaultModel || "(set model)",
         baseUrl: defaults.defaultBaseUrl || "(set base URL)",
-        key: isCodex ? (codexConnected ? "oauth:connected" : "run /codexconnect") : key ? `env:${redactedSecret(key)}` : !requiresApiKey(provider) ? "anonymous/free-tier" : `env:${[defaults.defaultApiKeyEnv, ...(defaults.alternateApiKeyEnvs ?? [])].filter(Boolean).join("|")} not set`,
-        source: isCodex ? (codexConnected ? "oauth" : "missing") : key ? "env" : !requiresApiKey(provider) ? "anonymous" : "missing",
+        key: isCodex
+          ? codexConnected
+            ? "oauth:connected"
+            : "run /codexconnect"
+          : key
+            ? `env:${redactedSecret(key)}`
+            : !requiresApiKey(provider)
+              ? "anonymous/free-tier"
+              : `env:${[defaults.defaultApiKeyEnv, ...(defaults.alternateApiKeyEnvs ?? [])].filter(Boolean).join("|")} not set`,
+        source: isCodex
+          ? codexConnected
+            ? "oauth"
+            : "missing"
+          : key
+            ? "env"
+            : !requiresApiKey(provider)
+              ? "anonymous"
+              : "missing",
         enabled: codexConnected || !!key || (!isCodex && !requiresApiKey(provider)),
         default: config.defaultsByOwner[actualOwner] === provider,
         fallback: !!defaults.freeFallbackCandidate,
@@ -385,7 +451,9 @@ export class LlmConfigStore {
       for (const candidate of config.fallbackOrder ?? FREE_FALLBACK_ORDER) {
         if (!order.includes(candidate)) order.push(candidate);
       }
-      for (const connection of config.connections.filter((item) => item.ownerId === actualOwner && item.useAsFallback)) {
+      for (const connection of config.connections.filter(
+        (item) => item.ownerId === actualOwner && item.useAsFallback,
+      )) {
         if (!order.includes(connection.provider)) order.push(connection.provider);
       }
     }
@@ -397,14 +465,18 @@ export class LlmConfigStore {
   }
 
   resolveByProvider(ownerId: string, provider: LlmProviderId): ResolvedLlmConnection | undefined {
-    const stored = this.load().connections.find((connection) => connection.ownerId === ownerId && connection.provider === provider && connection.enabled !== false);
+    const stored = this.load().connections.find(
+      (connection) =>
+        connection.ownerId === ownerId && connection.provider === provider && connection.enabled !== false,
+    );
     return stored ? this.resolveConnection(stored) : this.envConnection(ownerId, provider);
   }
 
   resolveConnection(connection: LlmConnection): ResolvedLlmConnection {
     const defaults = providerDefaults(connection.provider);
     const key = resolveKey(connection);
-    const baseUrl = connection.baseUrl || defaults.defaultBaseUrl || env(`${providerPrefix(connection.provider)}_BASE_URL`) || "";
+    const baseUrl =
+      connection.baseUrl || defaults.defaultBaseUrl || env(`${providerPrefix(connection.provider)}_BASE_URL`) || "";
     return {
       ...connection,
       displayName: defaults.displayName,
@@ -438,7 +510,11 @@ export class LlmConfigStore {
       };
     }
     const apiKey = this.envKey(defaults);
-    const baseUrl = env(`${providerPrefix(provider)}_BASE_URL`) || env("CUSTOM_LLM_BASE_URL") || env("LLM_BASE_URL") || defaults.defaultBaseUrl;
+    const baseUrl =
+      env(`${providerPrefix(provider)}_BASE_URL`) ||
+      env("CUSTOM_LLM_BASE_URL") ||
+      env("LLM_BASE_URL") ||
+      defaults.defaultBaseUrl;
     const model = env(`${providerPrefix(provider)}_MODEL`) || defaults.defaultModel;
     if ((!apiKey && requiresApiKey(provider)) || !model || !baseUrl) return undefined;
     return {
@@ -468,7 +544,11 @@ export class LlmConfigStore {
         ownerId: owner(raw.ownerId),
         provider,
         model: String(raw.model ?? defaults.defaultModel).trim(),
-        apiKeyEncrypted: raw.apiKeyEncrypted ? String(raw.apiKeyEncrypted) : raw.apiKey ? encryptSecret(String(raw.apiKey).trim()) : undefined,
+        apiKeyEncrypted: raw.apiKeyEncrypted
+          ? String(raw.apiKeyEncrypted)
+          : raw.apiKey
+            ? encryptSecret(String(raw.apiKey).trim())
+            : undefined,
         apiKeyEnv: raw.apiKeyEnv ? String(raw.apiKeyEnv).trim() : defaults.defaultApiKeyEnv,
         baseUrl: raw.baseUrl ? String(raw.baseUrl).trim().replace(/\/$/, "") : defaults.defaultBaseUrl,
         enabled: raw.enabled !== false,
@@ -569,7 +649,9 @@ export class LlmDraftStore {
 
   list(ownerId?: string, includeAll = false): LlmDraft[] {
     const actualOwner = owner(ownerId);
-    return this.load().drafts.filter((draft) => draft.ownerId === actualOwner && (includeAll || draft.status === "PENDING"));
+    return this.load().drafts.filter(
+      (draft) => draft.ownerId === actualOwner && (includeAll || draft.status === "PENDING"),
+    );
   }
 
   mark(id: string, status: LlmDraftStatus, ownerId?: string): LlmDraft {
@@ -591,32 +673,120 @@ export class LlmDraftStore {
 
   private save(data: DraftFile): void {
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-    try { chmodSync(dirname(this.file), 0o700); } catch { /* best effort on non-POSIX filesystems */ }
+    try {
+      chmodSync(dirname(this.file), 0o700);
+    } catch {
+      /* best effort on non-POSIX filesystems */
+    }
     const tempFile = `${this.file}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     writeFileSync(tempFile, JSON.stringify(data, null, 2), { mode: 0o600 });
     renameSync(tempFile, this.file);
-    try { chmodSync(this.file, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+    try {
+      chmodSync(this.file, 0o600);
+    } catch {
+      /* best effort on non-POSIX filesystems */
+    }
   }
 }
 
 export function formatLlmProviderRows(rows: LlmProviderListRow[]): string {
   if (!rows.length) return "No LLM providers configured.";
   return rows
-    .map((row) => `${row.default ? "*" : " "} ${row.provider.padEnd(13)} ${row.enabled ? "enabled" : "missing"} model=${row.model} key=${row.key}${row.fallback ? " fallback" : ""}`)
+    .map(
+      (row) =>
+        `${row.default ? "*" : " "} ${row.provider.padEnd(13)} ${row.enabled ? "enabled" : "missing"} model=${row.model} key=${row.key}${row.fallback ? " fallback" : ""}`,
+    )
     .join("\n");
 }
 
 export function formatDraft(draft: LlmDraft): string {
-  const commandText = draft.commands.length ? draft.commands.map((command, index) => `${index + 1}. ${command}`).join("\n") : "No executable commands proposed.";
+  const commandText = draft.commands.length
+    ? draft.commands.map((command, index) => `${index + 1}. ${command}`).join("\n")
+    : "No executable commands proposed.";
   const notes = draft.riskNotes.length ? `\nRisk notes:\n- ${draft.riskNotes.join("\n- ")}` : "";
-  return [`Draft ${draft.id} (${draft.status})`, `Provider: ${draft.provider} / ${draft.model}`, `Summary: ${draft.summary}`, "Commands:", commandText, notes].filter(Boolean).join("\n");
+  return [
+    `Draft ${draft.id} (${draft.status})`,
+    `Provider: ${draft.provider} / ${draft.model}`,
+    `Summary: ${draft.summary}`,
+    "Commands:",
+    commandText,
+    notes,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function compactDraftNumber(value: number): string {
+  if (!Number.isFinite(value)) return "-";
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(2).replace(/\.00$/, "")}m`;
+  if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(2).replace(/\.00$/, "")}k`;
+  return Number(value.toFixed(8)).toString();
+}
+
+export function formatDraftButtonLabel(
+  draft: LlmDraft,
+  ctx: PlanCommandParseContext & { resolveCloseQuantity?: (symbol: string) => number | undefined } = {},
+): string {
+  try {
+    const actions = parsePlanCommands(draft.commands, { ...ctx, format: draft.format });
+    const symbols = [
+      ...new Set(actions.flatMap((action) => action.symbols).filter((symbol) => symbol && symbol !== "GLOBAL")),
+    ];
+    const quantities: string[] = [];
+    let estimatedValue = 0;
+    let hasEstimatedValue = false;
+
+    for (const action of actions) {
+      const input = action.inputs[0];
+      if (!input) continue;
+      let quantity = input.quantity;
+      let quantityLabel: string;
+      const cachedCloseQuantity = ctx.resolveCloseQuantity?.(input.symbol);
+      if (input.closePercentage !== undefined) {
+        quantity =
+          cachedCloseQuantity && cachedCloseQuantity > 0
+            ? (cachedCloseQuantity * input.closePercentage) / 100
+            : undefined;
+        quantityLabel = quantity ? compactDraftNumber(quantity) : `${compactDraftNumber(input.closePercentage)}%`;
+      } else if (input.closePosition) {
+        quantity = cachedCloseQuantity && cachedCloseQuantity > 0 ? cachedCloseQuantity : undefined;
+        quantityLabel = quantity ? compactDraftNumber(quantity) : "close";
+      } else {
+        quantityLabel = quantity ? compactDraftNumber(quantity) : "-";
+      }
+      quantities.push(quantityLabel);
+
+      const values = action.inputs.map((candidate) => {
+        const price = candidate.limitPrice ?? candidate.triggerPrice ?? candidate.upperPrice ?? candidate.lowerPrice;
+        return quantity && price ? quantity * price : 0;
+      });
+      const actionValue = Math.max(0, ...values);
+      if (actionValue > 0) {
+        estimatedValue += actionValue;
+        hasEstimatedValue = true;
+      }
+    }
+
+    const symbolText = symbols.length
+      ? symbols.slice(0, 2).join("/") + (symbols.length > 2 ? `+${symbols.length - 2}` : "")
+      : "Trigger";
+    const quantityText = quantities.length ? [...new Set(quantities)].slice(0, 2).join("/") : "-";
+    const orderCount = draft.commands.length > 1 ? ` ${draft.commands.length} orders` : "";
+    const valueText = hasEstimatedValue ? ` ≈$${compactDraftNumber(estimatedValue)}` : "";
+    const idText = ` ID:${draft.id}`;
+    const detailText = `📝 ${symbolText} qty=${quantityText}${valueText}${orderCount}`;
+    return `${detailText.slice(0, Math.max(0, 64 - idText.length))}${idText}`;
+  } catch {
+    const idText = ` ID:${draft.id}`;
+    return `📝 ${String(draft.summary || "Draft").slice(0, Math.max(0, 61 - idText.length))}${idText}`;
+  }
 }
 
 export function escapeTelegramHtml(value: unknown): string {
   return String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function orderWord(count: number): string {
@@ -631,23 +801,27 @@ export function formatDraftForTelegramHtml(draft: LlmDraft): string {
   const count = draft.commands.length;
   const header = count ? `🧾 Proposed ${orderWord(count)} for review` : "🧾 Strategy draft for review";
   const commandText = count
-      ? draft.commands.map((command, index) => {
-        const prefix = count > 1 ? `${index + 1}. ` : "";
-        return `${prefix}<b>${escapeTelegramHtml(command)}</b>`;
-      }).join("\n")
-      : "No executable commands proposed.";
+    ? draft.commands
+        .map((command, index) => {
+          const prefix = count > 1 ? `${index + 1}. ` : "";
+          return `${prefix}<b>${escapeTelegramHtml(command)}</b>`;
+        })
+        .join("\n")
+    : "No executable commands proposed.";
 
   const riskNotes = draft.riskNotes.length
-      ? ["", "<b>Risk notes</b>", ...draft.riskNotes.map((note) => `• ${escapeTelegramHtml(note)}`)]
-      : [];
+    ? ["", "<b>Risk notes</b>", ...draft.riskNotes.map((note) => `• ${escapeTelegramHtml(note)}`)]
+    : [];
 
-  const safetyNotes = count ? [
-    "",
-    "<b>Before confirming</b>",
-    "• The bot will validate the exact command text above.",
-    "• Confirmation creates the local order/trigger setup for your Telegram user only.",
-    "• BUY checks executable ASK depth; SELL checks executable BID depth.",
-  ] : [];
+  const safetyNotes = count
+    ? [
+        "",
+        "<b>Before confirming</b>",
+        "• The bot will validate the exact command text above.",
+        "• Confirmation creates the local order/trigger setup for your Telegram user only.",
+        "• BUY checks executable ASK depth; SELL checks executable BID depth.",
+      ]
+    : [];
 
   return [
     `<b>${header}</b>`,
@@ -662,7 +836,9 @@ export function formatDraftForTelegramHtml(draft: LlmDraft): string {
     ...safetyNotes,
     "",
     `Confirm with <code>/llmconfirm ${escapeTelegramHtml(draft.id)}</code> or tap the button below.`,
-  ].filter((line) => line !== undefined && line !== null).join("\n");
+  ]
+    .filter((line) => line !== undefined && line !== null)
+    .join("\n");
 }
 
 export interface ParsedPlanAction {
@@ -810,14 +986,25 @@ function percentage(value: unknown, name: string): number {
 }
 
 function paymentCurrency(ctx: PlanCommandParseContext, opts?: Record<string, string | true>): string {
-  return optionString(opts ?? {}, "payment-currency") ?? ctx.defaultPaymentCurrency ?? process.env.DEFAULT_PAYMENT_CURRENCY ?? "USD";
+  return (
+    optionString(opts ?? {}, "payment-currency") ??
+    ctx.defaultPaymentCurrency ??
+    process.env.DEFAULT_PAYMENT_CURRENCY ??
+    "USD"
+  );
 }
 
 function closeSide(ctx: PlanCommandParseContext, symbol: string, explicitSide?: string): "BUY" | "SELL" {
-  return explicitSide ? normalizeSide(explicitSide) : ctx.resolveCloseSide?.(symbol) ?? "SELL";
+  return explicitSide ? normalizeSide(explicitSide) : (ctx.resolveCloseSide?.(symbol) ?? "SELL");
 }
 
-function baseInput(ctx: PlanCommandParseContext, kind: TriggerInput["kind"], symbol: string, side: string, opts?: Record<string, string | true>): TriggerInput {
+function baseInput(
+  ctx: PlanCommandParseContext,
+  kind: TriggerInput["kind"],
+  symbol: string,
+  side: string,
+  opts?: Record<string, string | true>,
+): TriggerInput {
   return {
     ownerId: owner(ctx.ownerId),
     kind,
@@ -827,24 +1014,26 @@ function baseInput(ctx: PlanCommandParseContext, kind: TriggerInput["kind"], sym
   };
 }
 
-function sizingFromOptions(opts: Record<string, string | true>, requireSize = true): Pick<TriggerInput, "quantity" | "closePosition" | "closePercentage" | "reduceOnly"> {
+function sizingFromOptions(
+  opts: Record<string, string | true>,
+  requireSize = true,
+): Pick<TriggerInput, "quantity" | "closePosition" | "closePercentage" | "reduceOnly"> {
   const out: Pick<TriggerInput, "quantity" | "closePosition" | "closePercentage" | "reduceOnly"> = {};
   if (opts.quantity !== undefined) out.quantity = requiredNumber(opts, "quantity");
   if (optionFlag(opts, "close-position")) out.closePosition = true;
-  if (opts["close-percentage"] !== undefined) out.closePercentage = percentage(requiredString(opts, "close-percentage"), "close-percentage");
+  if (opts["close-percentage"] !== undefined)
+    out.closePercentage = percentage(requiredString(opts, "close-percentage"), "close-percentage");
   if (optionFlag(opts, "reduce-only")) out.reduceOnly = true;
 
   if (requireSize && out.quantity === undefined && !out.closePosition && out.closePercentage === undefined) {
-    throw new Error("Order-submitting LLM commands must include an explicit size: --quantity, --close-position, or --close-percentage");
+    throw new Error(
+      "Order-submitting LLM commands must include an explicit size: --quantity, --close-position, or --close-percentage",
+    );
   }
   return out;
 }
 
-function sizingFromWord(raw: string | undefined, requireSize = true): Pick<TriggerInput, "quantity" | "closePosition" | "closePercentage"> {
-  if (!raw) {
-    if (requireSize) throw new Error("Order-submitting LLM commands must include an explicit size: quantity, close, or percent");
-    return {};
-  }
+function sizingFromWord(raw: string): Pick<TriggerInput, "quantity" | "closePosition" | "closePercentage"> {
   const lowered = raw.toLowerCase();
   if (["close", "all", "position", "close-position"].includes(lowered)) return { closePosition: true };
   if (raw.endsWith("%")) return { closePercentage: percentage(raw, "percent") };
@@ -854,13 +1043,24 @@ function sizingFromWord(raw: string | undefined, requireSize = true): Pick<Trigg
 function assertNoForbiddenSource(cleaned: string): void {
   const tokens = tokenize(cleaned).map((token) => token.toLowerCase());
   if (tokens.includes("--source") || tokens.includes("last") || tokens.includes("mid") || tokens.includes("mark")) {
-    throw new Error("LLM commands must not select last/mid/mark trigger sources; triggers use side-specific L2 depth by default");
+    throw new Error(
+      "LLM commands must not select last/mid/mark trigger sources; triggers use side-specific L2 depth by default",
+    );
   }
 }
 
 function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlanAction {
   const { command, opts } = parsed;
-  const common = ["symbol", "side", "quantity", "close-position", "close-percentage", "payment-currency", "account", "reduce-only"];
+  const common = [
+    "symbol",
+    "side",
+    "quantity",
+    "close-position",
+    "close-percentage",
+    "payment-currency",
+    "account",
+    "reduce-only",
+  ];
 
   switch (command) {
     case "trigger:limit": {
@@ -869,7 +1069,13 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       return {
         action: "add",
         description: "limit trigger",
-        inputs: [{ ...baseInput(ctx, "LIMIT", symbol, requiredString(opts, "side"), opts), triggerPrice: requiredNumber(opts, "price"), ...sizingFromOptions(opts) }],
+        inputs: [
+          {
+            ...baseInput(ctx, "LIMIT", symbol, requiredString(opts, "side"), opts),
+            triggerPrice: requiredNumber(opts, "price"),
+            ...sizingFromOptions(opts),
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -879,7 +1085,14 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       return {
         action: "add",
         description: "stop-limit trigger",
-        inputs: [{ ...baseInput(ctx, "STOP_LIMIT", symbol, requiredString(opts, "side"), opts), triggerPrice: requiredNumber(opts, "stop"), limitPrice: requiredNumber(opts, "limit"), ...sizingFromOptions(opts) }],
+        inputs: [
+          {
+            ...baseInput(ctx, "STOP_LIMIT", symbol, requiredString(opts, "side"), opts),
+            triggerPrice: requiredNumber(opts, "stop"),
+            limitPrice: requiredNumber(opts, "limit"),
+            ...sizingFromOptions(opts),
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -891,7 +1104,14 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       return {
         action: "add",
         description: `${kind.toLowerCase()} trigger`,
-        inputs: [{ ...baseInput(ctx, kind, symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts), triggerPrice: requiredNumber(opts, "price"), limitPrice: numberOption(opts, "limit"), ...sizingFromOptions(opts) }],
+        inputs: [
+          {
+            ...baseInput(ctx, kind, symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts),
+            triggerPrice: requiredNumber(opts, "price"),
+            limitPrice: numberOption(opts, "limit"),
+            ...sizingFromOptions(opts),
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -904,13 +1124,21 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       return {
         action: "add",
         description: `${isLimit ? "trailing stop-limit" : "trailing stop"} trigger`,
-        inputs: [{
-          ...baseInput(ctx, isLimit ? "TRAILING_STOP_LIMIT" : "TRAILING_STOP", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts),
-          trailMode: trail.mode,
-          trailValue: trail.value,
-          limitOffset: numberOption(opts, "limit-offset"),
-          ...sizingFromOptions(opts),
-        }],
+        inputs: [
+          {
+            ...baseInput(
+              ctx,
+              isLimit ? "TRAILING_STOP_LIMIT" : "TRAILING_STOP",
+              symbol,
+              closeSide(ctx, symbol, optionString(opts, "side")),
+              opts,
+            ),
+            trailMode: trail.mode,
+            trailValue: trail.value,
+            limitOffset: numberOption(opts, "limit-offset"),
+            ...sizingFromOptions(opts),
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -919,31 +1147,52 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       const symbol = normalizeSymbol(requiredString(opts, "symbol"));
       const side = closeSide(ctx, symbol, optionString(opts, "side"));
       const sizing = sizingFromOptions(opts);
-      const first = { ...baseInput(ctx, "TAKE_PROFIT", symbol, side, opts), triggerPrice: requiredNumber(opts, "take-profit"), ...sizing };
+      const first = {
+        ...baseInput(ctx, "TAKE_PROFIT", symbol, side, opts),
+        triggerPrice: requiredNumber(opts, "take-profit"),
+        ...sizing,
+      };
       const secondKind: TriggerInput["kind"] = opts["stop-limit"] !== undefined ? "STOP_LIMIT" : "STOP_LOSS";
-      const second = { ...baseInput(ctx, secondKind, symbol, side, opts), triggerPrice: requiredNumber(opts, "stop-loss"), limitPrice: numberOption(opts, "stop-limit"), ...sizing };
+      const second = {
+        ...baseInput(ctx, secondKind, symbol, side, opts),
+        triggerPrice: requiredNumber(opts, "stop-loss"),
+        limitPrice: numberOption(opts, "stop-limit"),
+        ...sizing,
+      };
       return { action: "oco", description: "oco trigger pair", inputs: [first, second], symbols: [symbol] };
     }
     case "trigger:bracket": {
-      assertAllowedOptions(command, opts, ["symbol", "side", "entry", "quantity", "take-profit", "stop-loss", "stop-limit", "payment-currency", "exits-close-position"]);
+      assertAllowedOptions(command, opts, [
+        "symbol",
+        "side",
+        "entry",
+        "quantity",
+        "take-profit",
+        "stop-loss",
+        "stop-limit",
+        "payment-currency",
+        "exits-close-position",
+      ]);
       const symbol = normalizeSymbol(requiredString(opts, "symbol"));
       const quantity = requiredNumber(opts, "quantity");
       return {
         action: "add",
         description: "bracket entry trigger",
-        inputs: [{
-          ...baseInput(ctx, "LIMIT", symbol, requiredString(opts, "side"), opts),
-          triggerPrice: requiredNumber(opts, "entry"),
-          quantity,
-          meta: {
-            bracket: {
-              takeProfitPrice: requiredNumber(opts, "take-profit"),
-              stopLossPrice: requiredNumber(opts, "stop-loss"),
-              stopLimitPrice: numberOption(opts, "stop-limit"),
-              useClosePosition: optionFlag(opts, "exits-close-position"),
+        inputs: [
+          {
+            ...baseInput(ctx, "LIMIT", symbol, requiredString(opts, "side"), opts),
+            triggerPrice: requiredNumber(opts, "entry"),
+            quantity,
+            meta: {
+              bracket: {
+                takeProfitPrice: requiredNumber(opts, "take-profit"),
+                stopLossPrice: requiredNumber(opts, "stop-loss"),
+                stopLimitPrice: numberOption(opts, "stop-limit"),
+                useClosePosition: optionFlag(opts, "exits-close-position"),
+              },
             },
           },
-        }],
+        ],
         symbols: [symbol],
       };
     }
@@ -953,7 +1202,16 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       return {
         action: "add",
         description: "scale-out take-profit trigger",
-        inputs: [{ ...baseInput(ctx, "TAKE_PROFIT", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts), triggerPrice: requiredNumber(opts, "price"), limitPrice: numberOption(opts, "limit"), closePercentage: percentage(requiredString(opts, "percent"), "percent"), reduceOnly: true, meta: { strategy: "SCALE_OUT" } }],
+        inputs: [
+          {
+            ...baseInput(ctx, "TAKE_PROFIT", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts),
+            triggerPrice: requiredNumber(opts, "price"),
+            limitPrice: numberOption(opts, "limit"),
+            closePercentage: percentage(requiredString(opts, "percent"), "percent"),
+            reduceOnly: true,
+            meta: { strategy: "SCALE_OUT" },
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -961,11 +1219,24 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       assertAllowedOptions(command, opts, [...common, "after", "plus", "limit"]);
       const symbol = normalizeSymbol(requiredString(opts, "symbol"));
       const after = parseAmountOrPercent(requiredString(opts, "after"));
-      const plus = opts.plus !== undefined ? parseAmountOrPercent(requiredString(opts, "plus")) : { mode: "AMOUNT" as const, value: 0 };
+      const plus =
+        opts.plus !== undefined
+          ? parseAmountOrPercent(requiredString(opts, "plus"))
+          : { mode: "AMOUNT" as const, value: 0 };
       return {
         action: "add",
         description: "break-even stop trigger",
-        inputs: [{ ...baseInput(ctx, "BREAK_EVEN_STOP", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts), activationMode: after.mode, activationValue: after.value, lockMode: plus.mode, lockValue: plus.value, limitPrice: numberOption(opts, "limit"), ...sizingFromOptions(opts) }],
+        inputs: [
+          {
+            ...baseInput(ctx, "BREAK_EVEN_STOP", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts),
+            activationMode: after.mode,
+            activationValue: after.value,
+            lockMode: plus.mode,
+            lockValue: plus.value,
+            limitPrice: numberOption(opts, "limit"),
+            ...sizingFromOptions(opts),
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -978,7 +1249,14 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       return {
         action: "add",
         description: "time close trigger",
-        inputs: [{ ...baseInput(ctx, "TIME_CLOSE", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts), triggerAt: parseTimeOrDuration(time, ctx.now), limitPrice: numberOption(opts, "limit"), ...sizing }],
+        inputs: [
+          {
+            ...baseInput(ctx, "TIME_CLOSE", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts),
+            triggerAt: parseTimeOrDuration(time, ctx.now),
+            limitPrice: numberOption(opts, "limit"),
+            ...sizing,
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -987,7 +1265,13 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       return {
         action: "add",
         description: "time cancel trigger",
-        inputs: [{ ...baseInput(ctx, "TIME_CANCEL", "GLOBAL", "SELL", opts), triggerAt: parseTimeOrDuration(requiredString(opts, "after"), ctx.now), cancelTriggerId: requiredString(opts, "id") }],
+        inputs: [
+          {
+            ...baseInput(ctx, "TIME_CANCEL", "GLOBAL", "SELL", opts),
+            triggerAt: parseTimeOrDuration(requiredString(opts, "after"), ctx.now),
+            cancelTriggerId: requiredString(opts, "id"),
+          },
+        ],
         symbols: [],
       };
     }
@@ -996,23 +1280,57 @@ function cliAction(parsed: CliCommand, ctx: PlanCommandParseContext): ParsedPlan
       const symbol = normalizeSymbol(requiredString(opts, "symbol"));
       const mode = String(requiredString(opts, "mode")).toUpperCase().replace(/-/g, "_") as PriceBandMode;
       if (mode !== "BREAKOUT" && mode !== "REVERSION") throw new Error("--mode must be BREAKOUT or REVERSION");
-      if (opts.upper === undefined && opts.lower === undefined) throw new Error("price-band requires --upper or --lower");
+      if (opts.upper === undefined && opts.lower === undefined)
+        throw new Error("price-band requires --upper or --lower");
       return {
         action: "add",
         description: "price-band trigger",
-        inputs: [{ ...baseInput(ctx, "PRICE_BAND", symbol, requiredString(opts, "side"), opts), priceBandMode: mode, upperPrice: numberOption(opts, "upper"), lowerPrice: numberOption(opts, "lower"), limitPrice: numberOption(opts, "limit"), ...sizingFromOptions(opts) }],
+        inputs: [
+          {
+            ...baseInput(ctx, "PRICE_BAND", symbol, requiredString(opts, "side"), opts),
+            priceBandMode: mode,
+            upperPrice: numberOption(opts, "upper"),
+            lowerPrice: numberOption(opts, "lower"),
+            limitPrice: numberOption(opts, "limit"),
+            ...sizingFromOptions(opts),
+          },
+        ],
         symbols: [symbol],
       };
     }
     case "trigger:risk-guard": {
-      assertAllowedOptions(command, opts, ["symbol", "metric", "threshold", "action", "side", "limit", "quantity", "close-position", "payment-currency"]);
+      assertAllowedOptions(command, opts, [
+        "symbol",
+        "metric",
+        "threshold",
+        "action",
+        "side",
+        "limit",
+        "quantity",
+        "close-position",
+        "payment-currency",
+      ]);
       const symbol = normalizeSymbol(requiredString(opts, "symbol"));
-      const action = String(optionString(opts, "action") ?? "ALERT").toUpperCase().replace(/-/g, "_") as RiskAction;
-      const sizing = action === "CLOSE_POSITION" ? { closePosition: true, reduceOnly: true, ...sizingFromOptions(opts, false) } : sizingFromOptions(opts, false);
+      const action = String(optionString(opts, "action") ?? "ALERT")
+        .toUpperCase()
+        .replace(/-/g, "_") as RiskAction;
+      const sizing =
+        action === "CLOSE_POSITION"
+          ? { closePosition: true, reduceOnly: true, ...sizingFromOptions(opts, false) }
+          : sizingFromOptions(opts, false);
       return {
         action: "add",
         description: "risk guard trigger",
-        inputs: [{ ...baseInput(ctx, "RISK_GUARD", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts), riskMetric: String(requiredString(opts, "metric")).toUpperCase().replace(/-/g, "_") as RiskMetric, riskThreshold: requiredNumber(opts, "threshold"), riskAction: action, limitPrice: numberOption(opts, "limit"), ...sizing }],
+        inputs: [
+          {
+            ...baseInput(ctx, "RISK_GUARD", symbol, closeSide(ctx, symbol, optionString(opts, "side")), opts),
+            riskMetric: String(requiredString(opts, "metric")).toUpperCase().replace(/-/g, "_") as RiskMetric,
+            riskThreshold: requiredNumber(opts, "threshold"),
+            riskAction: action,
+            limitPrice: numberOption(opts, "limit"),
+            ...sizing,
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -1030,13 +1348,36 @@ function slashAction(line: string, ctx: PlanCommandParseContext): ParsedPlanActi
       if (args.length < 4) throw new Error("/limit requires symbol side price quantity|close|percent");
       const [symbolRaw, sideRaw, priceRaw, qtyRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
-      return { action: "add", description: "limit trigger", inputs: [{ ...baseInput(ctx, "LIMIT", symbol, sideRaw), triggerPrice: positiveNumber(priceRaw, "price"), ...sizingFromWord(qtyRaw) }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "limit trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "LIMIT", symbol, sideRaw),
+            triggerPrice: positiveNumber(priceRaw, "price"),
+            ...sizingFromWord(qtyRaw),
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "stoplimit": {
       if (args.length < 5) throw new Error("/stoplimit requires symbol side stop limit quantity|close|percent");
       const [symbolRaw, sideRaw, stopRaw, limitRaw, qtyRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
-      return { action: "add", description: "stop-limit trigger", inputs: [{ ...baseInput(ctx, "STOP_LIMIT", symbol, sideRaw), triggerPrice: positiveNumber(stopRaw, "stop"), limitPrice: positiveNumber(limitRaw, "limit"), ...sizingFromWord(qtyRaw) }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "stop-limit trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "STOP_LIMIT", symbol, sideRaw),
+            triggerPrice: positiveNumber(stopRaw, "stop"),
+            limitPrice: positiveNumber(limitRaw, "limit"),
+            ...sizingFromWord(qtyRaw),
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "takeprofit":
     case "stoploss": {
@@ -1044,12 +1385,26 @@ function slashAction(line: string, ctx: PlanCommandParseContext): ParsedPlanActi
       const [symbolRaw, sideRaw, priceRaw, qtyRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
       const kind: TriggerInput["kind"] = command === "takeprofit" ? "TAKE_PROFIT" : "STOP_LOSS";
-      return { action: "add", description: `${command} trigger`, inputs: [{ ...baseInput(ctx, kind, symbol, closeSide(ctx, symbol, sideRaw)), triggerPrice: positiveNumber(priceRaw, "price"), ...sizingFromWord(qtyRaw) }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: `${command} trigger`,
+        inputs: [
+          {
+            ...baseInput(ctx, kind, symbol, closeSide(ctx, symbol, sideRaw)),
+            triggerPrice: positiveNumber(priceRaw, "price"),
+            ...sizingFromWord(qtyRaw),
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "trailingstop":
     case "trailingstoplimit": {
       const needs = command === "trailingstoplimit" ? 5 : 4;
-      if (args.length < needs) throw new Error(`/${command} requires symbol side trail${command === "trailingstoplimit" ? " offset" : ""} quantity|close|percent`);
+      if (args.length < needs)
+        throw new Error(
+          `/${command} requires symbol side trail${command === "trailingstoplimit" ? " offset" : ""} quantity|close|percent`,
+        );
       const [symbolRaw, sideRaw, trailRaw, maybeOffset, maybeQty] = args;
       const symbol = normalizeSymbol(symbolRaw);
       const trail = parseAmountOrPercent(trailRaw);
@@ -1057,29 +1412,66 @@ function slashAction(line: string, ctx: PlanCommandParseContext): ParsedPlanActi
       return {
         action: "add",
         description: command,
-        inputs: [{ ...baseInput(ctx, isLimit ? "TRAILING_STOP_LIMIT" : "TRAILING_STOP", symbol, closeSide(ctx, symbol, sideRaw)), trailMode: trail.mode, trailValue: trail.value, limitOffset: isLimit ? positiveNumber(maybeOffset, "offset") : undefined, ...sizingFromWord(isLimit ? maybeQty : maybeOffset) }],
+        inputs: [
+          {
+            ...baseInput(
+              ctx,
+              isLimit ? "TRAILING_STOP_LIMIT" : "TRAILING_STOP",
+              symbol,
+              closeSide(ctx, symbol, sideRaw),
+            ),
+            trailMode: trail.mode,
+            trailValue: trail.value,
+            limitOffset: isLimit ? positiveNumber(maybeOffset, "offset") : undefined,
+            ...sizingFromWord(isLimit ? maybeQty : maybeOffset),
+          },
+        ],
         symbols: [symbol],
       };
     }
     case "oco": {
-      if (args.length < 5) throw new Error("/oco requires symbol side takeProfit stopLoss quantity|close|percent [stopLimit]");
+      if (args.length < 5)
+        throw new Error("/oco requires symbol side takeProfit stopLoss quantity|close|percent [stopLimit]");
       const [symbolRaw, sideRaw, takeProfitRaw, stopLossRaw, qtyRaw, stopLimitRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
       const side = closeSide(ctx, symbol, sideRaw);
       const sizing = sizingFromWord(qtyRaw);
-      const first = { ...baseInput(ctx, "TAKE_PROFIT", symbol, side), triggerPrice: positiveNumber(takeProfitRaw, "takeProfit"), ...sizing };
+      const first = {
+        ...baseInput(ctx, "TAKE_PROFIT", symbol, side),
+        triggerPrice: positiveNumber(takeProfitRaw, "takeProfit"),
+        ...sizing,
+      };
       const secondKind: TriggerInput["kind"] = stopLimitRaw ? "STOP_LIMIT" : "STOP_LOSS";
-      const second = { ...baseInput(ctx, secondKind, symbol, side), triggerPrice: positiveNumber(stopLossRaw, "stopLoss"), limitPrice: stopLimitRaw ? positiveNumber(stopLimitRaw, "stopLimit") : undefined, ...sizing };
+      const second = {
+        ...baseInput(ctx, secondKind, symbol, side),
+        triggerPrice: positiveNumber(stopLossRaw, "stopLoss"),
+        limitPrice: stopLimitRaw ? positiveNumber(stopLimitRaw, "stopLimit") : undefined,
+        ...sizing,
+      };
       return { action: "oco", description: "oco trigger pair", inputs: [first, second], symbols: [symbol] };
     }
     case "bracket": {
-      if (args.length < 6) throw new Error("/bracket requires symbol side entry quantity takeProfit stopLoss [stopLimit]");
+      if (args.length < 6)
+        throw new Error("/bracket requires symbol side entry quantity takeProfit stopLoss [stopLimit]");
       const [symbolRaw, sideRaw, entryRaw, qtyRaw, takeProfitRaw, stopLossRaw, stopLimitRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
       return {
         action: "add",
         description: "bracket entry trigger",
-        inputs: [{ ...baseInput(ctx, "LIMIT", symbol, sideRaw), triggerPrice: positiveNumber(entryRaw, "entry"), quantity: positiveNumber(qtyRaw, "quantity"), meta: { bracket: { takeProfitPrice: positiveNumber(takeProfitRaw, "takeProfit"), stopLossPrice: positiveNumber(stopLossRaw, "stopLoss"), stopLimitPrice: stopLimitRaw ? positiveNumber(stopLimitRaw, "stopLimit") : undefined } } }],
+        inputs: [
+          {
+            ...baseInput(ctx, "LIMIT", symbol, sideRaw),
+            triggerPrice: positiveNumber(entryRaw, "entry"),
+            quantity: positiveNumber(qtyRaw, "quantity"),
+            meta: {
+              bracket: {
+                takeProfitPrice: positiveNumber(takeProfitRaw, "takeProfit"),
+                stopLossPrice: positiveNumber(stopLossRaw, "stopLoss"),
+                stopLimitPrice: stopLimitRaw ? positiveNumber(stopLimitRaw, "stopLimit") : undefined,
+              },
+            },
+          },
+        ],
         symbols: [symbol],
       };
     }
@@ -1087,7 +1479,20 @@ function slashAction(line: string, ctx: PlanCommandParseContext): ParsedPlanActi
       if (args.length < 4) throw new Error("/scaleout requires symbol side price percent");
       const [symbolRaw, sideRaw, priceRaw, percentRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
-      return { action: "add", description: "scale-out trigger", inputs: [{ ...baseInput(ctx, "TAKE_PROFIT", symbol, closeSide(ctx, symbol, sideRaw)), triggerPrice: positiveNumber(priceRaw, "price"), closePercentage: percentage(percentRaw, "percent"), reduceOnly: true, meta: { strategy: "SCALE_OUT" } }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "scale-out trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "TAKE_PROFIT", symbol, closeSide(ctx, symbol, sideRaw)),
+            triggerPrice: positiveNumber(priceRaw, "price"),
+            closePercentage: percentage(percentRaw, "percent"),
+            reduceOnly: true,
+            meta: { strategy: "SCALE_OUT" },
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "breakeven": {
       if (args.length < 3) throw new Error("/breakeven requires symbol side after [plus]");
@@ -1095,19 +1500,57 @@ function slashAction(line: string, ctx: PlanCommandParseContext): ParsedPlanActi
       const symbol = normalizeSymbol(symbolRaw);
       const after = parseAmountOrPercent(afterRaw);
       const plus = plusRaw ? parseAmountOrPercent(plusRaw) : { mode: "AMOUNT" as const, value: 0 };
-      return { action: "add", description: "break-even stop", inputs: [{ ...baseInput(ctx, "BREAK_EVEN_STOP", symbol, closeSide(ctx, symbol, sideRaw)), activationMode: after.mode, activationValue: after.value, lockMode: plus.mode, lockValue: plus.value, closePosition: true, reduceOnly: true }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "break-even stop",
+        inputs: [
+          {
+            ...baseInput(ctx, "BREAK_EVEN_STOP", symbol, closeSide(ctx, symbol, sideRaw)),
+            activationMode: after.mode,
+            activationValue: after.value,
+            lockMode: plus.mode,
+            lockValue: plus.value,
+            closePosition: true,
+            reduceOnly: true,
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "closeafter":
     case "closeat": {
       if (args.length < 2) throw new Error(`/${command} requires symbol time`);
       const [symbolRaw, ...timeParts] = args;
       const symbol = normalizeSymbol(symbolRaw);
-      return { action: "add", description: "time close trigger", inputs: [{ ...baseInput(ctx, "TIME_CLOSE", symbol, closeSide(ctx, symbol)), triggerAt: parseTimeOrDuration(timeParts.join(" "), ctx.now), closePosition: true, reduceOnly: true }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "time close trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "TIME_CLOSE", symbol, closeSide(ctx, symbol)),
+            triggerAt: parseTimeOrDuration(timeParts.join(" "), ctx.now),
+            closePosition: true,
+            reduceOnly: true,
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "cancelafter": {
       if (args.length < 2) throw new Error("/cancelafter requires trigger-id duration");
       const [idRaw, afterRaw] = args;
-      return { action: "add", description: "time cancel trigger", inputs: [{ ...baseInput(ctx, "TIME_CANCEL", "GLOBAL", "SELL"), triggerAt: parseTimeOrDuration(afterRaw, ctx.now), cancelTriggerId: idRaw }], symbols: [] };
+      return {
+        action: "add",
+        description: "time cancel trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "TIME_CANCEL", "GLOBAL", "SELL"),
+            triggerAt: parseTimeOrDuration(afterRaw, ctx.now),
+            cancelTriggerId: idRaw,
+          },
+        ],
+        symbols: [],
+      };
     }
     case "priceband": {
       if (args.length < 5) throw new Error("/priceband requires symbol side mode bandPrice quantity|close|percent");
@@ -1116,26 +1559,80 @@ function slashAction(line: string, ctx: PlanCommandParseContext): ParsedPlanActi
       const side = normalizeSide(sideRaw);
       const mode = String(modeRaw).toUpperCase().replace(/-/g, "_") as PriceBandMode;
       const needsUpper = (mode === "BREAKOUT" && side === "BUY") || (mode === "REVERSION" && side === "SELL");
-      return { action: "add", description: "price-band trigger", inputs: [{ ...baseInput(ctx, "PRICE_BAND", symbol, side), priceBandMode: mode, upperPrice: needsUpper ? positiveNumber(bandPriceRaw, "upper") : undefined, lowerPrice: needsUpper ? undefined : positiveNumber(bandPriceRaw, "lower"), ...sizingFromWord(qtyRaw) }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "price-band trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "PRICE_BAND", symbol, side),
+            priceBandMode: mode,
+            upperPrice: needsUpper ? positiveNumber(bandPriceRaw, "upper") : undefined,
+            lowerPrice: needsUpper ? undefined : positiveNumber(bandPriceRaw, "lower"),
+            ...sizingFromWord(qtyRaw),
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "riskguard": {
       if (args.length < 3) throw new Error("/riskguard requires symbol metric threshold [action]");
       const [symbolRaw, metricRaw, thresholdRaw, actionRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
-      const action = String(actionRaw ?? "ALERT").toUpperCase().replace(/-/g, "_") as RiskAction;
-      return { action: "add", description: "risk guard", inputs: [{ ...baseInput(ctx, "RISK_GUARD", symbol, closeSide(ctx, symbol)), riskMetric: String(metricRaw).toUpperCase().replace(/-/g, "_") as RiskMetric, riskThreshold: positiveNumber(thresholdRaw, "threshold"), riskAction: action, closePosition: action === "CLOSE_POSITION", reduceOnly: action === "CLOSE_POSITION" }], symbols: [symbol] };
+      const action = String(actionRaw ?? "ALERT")
+        .toUpperCase()
+        .replace(/-/g, "_") as RiskAction;
+      return {
+        action: "add",
+        description: "risk guard",
+        inputs: [
+          {
+            ...baseInput(ctx, "RISK_GUARD", symbol, closeSide(ctx, symbol)),
+            riskMetric: String(metricRaw).toUpperCase().replace(/-/g, "_") as RiskMetric,
+            riskThreshold: positiveNumber(thresholdRaw, "threshold"),
+            riskAction: action,
+            closePosition: action === "CLOSE_POSITION",
+            reduceOnly: action === "CLOSE_POSITION",
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "closelimit": {
       if (args.length < 2) throw new Error("/closelimit requires symbol price");
       const [symbolRaw, priceRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
-      return { action: "add", description: "close limit trigger", inputs: [{ ...baseInput(ctx, "LIMIT", symbol, closeSide(ctx, symbol)), triggerPrice: positiveNumber(priceRaw, "price"), closePosition: true, reduceOnly: true }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "close limit trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "LIMIT", symbol, closeSide(ctx, symbol)),
+            triggerPrice: positiveNumber(priceRaw, "price"),
+            closePosition: true,
+            reduceOnly: true,
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     case "closestoplimit": {
       if (args.length < 3) throw new Error("/closestoplimit requires symbol stop limit");
       const [symbolRaw, stopRaw, limitRaw] = args;
       const symbol = normalizeSymbol(symbolRaw);
-      return { action: "add", description: "close stop-limit trigger", inputs: [{ ...baseInput(ctx, "STOP_LIMIT", symbol, closeSide(ctx, symbol)), triggerPrice: positiveNumber(stopRaw, "stop"), limitPrice: positiveNumber(limitRaw, "limit"), closePosition: true, reduceOnly: true }], symbols: [symbol] };
+      return {
+        action: "add",
+        description: "close stop-limit trigger",
+        inputs: [
+          {
+            ...baseInput(ctx, "STOP_LIMIT", symbol, closeSide(ctx, symbol)),
+            triggerPrice: positiveNumber(stopRaw, "stop"),
+            limitPrice: positiveNumber(limitRaw, "limit"),
+            closePosition: true,
+            reduceOnly: true,
+          },
+        ],
+        symbols: [symbol],
+      };
     }
     default:
       throw new Error(`Unsupported Telegram command: ${command}`);
@@ -1147,7 +1644,8 @@ export function parsePlanCommand(line: string, ctx: PlanCommandParseContext = {}
   if (!cleaned) throw new Error("Empty command line");
   assertNoForbiddenSource(cleaned);
   const tokens = tokenize(cleaned);
-  if ((ctx.format !== "cli" && tokens[0]?.startsWith("/")) || tokens.some((token) => token.startsWith("/"))) return slashAction(cleaned, ctx);
+  if ((ctx.format !== "cli" && tokens[0]?.startsWith("/")) || tokens.some((token) => token.startsWith("/")))
+    return slashAction(cleaned, ctx);
   return cliAction(parseCliCommand(cleaned), ctx);
 }
 
@@ -1200,7 +1698,10 @@ function parseJsonObject(text: unknown): RawLlmPlan {
   const raw = String(text ?? "").trim();
   if (!raw) throw new Error("LLM returned an empty response");
 
-  const withoutFence = raw.replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+  const withoutFence = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
   try {
     return JSON.parse(withoutFence);
   } catch {
@@ -1222,15 +1723,23 @@ async function postJson(url: string, body: unknown, options: unknown): Promise<a
 export class LlmProviderClient {
   constructor(private readonly post: PostJsonFn = postJson) {}
 
-  async completePlan(connection: ResolvedLlmConnection, request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number }): Promise<RawLlmPlan> {
-    if (connection.protocol === "codex-exec") return completeCodexOAuthPlan(connection.ownerId, connection.model, request);
-    if (!connection.effectiveApiKey && requiresApiKey(connection.provider)) throw new Error(`${connection.provider} API key is not configured`);
+  async completePlan(
+    connection: ResolvedLlmConnection,
+    request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number },
+  ): Promise<RawLlmPlan> {
+    if (connection.protocol === "codex-exec")
+      return completeCodexOAuthPlan(connection.ownerId, connection.model, request);
+    if (!connection.effectiveApiKey && requiresApiKey(connection.provider))
+      throw new Error(`${connection.provider} API key is not configured`);
     if (connection.protocol === "anthropic-messages") return this.callAnthropic(connection, request);
     if (connection.protocol === "gemini-generate-content") return this.callGemini(connection, request);
     return this.callOpenAiCompatible(connection, request);
   }
 
-  private async callOpenAiCompatible(connection: ResolvedLlmConnection, request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number }): Promise<RawLlmPlan> {
+  private async callOpenAiCompatible(
+    connection: ResolvedLlmConnection,
+    request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number },
+  ): Promise<RawLlmPlan> {
     const body: any = {
       model: connection.model,
       messages: [
@@ -1239,9 +1748,13 @@ export class LlmProviderClient {
       ],
       temperature: request.temperature ?? 0.1,
       max_tokens: request.maxTokens ?? 1400,
-      response_format: connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "ovhcloud"
-        ? { type: "json_schema", json_schema: { name: "quote_trade_order_plan", strict: true, schema: PLAN_RESPONSE_SCHEMA } }
-        : { type: "json_object" },
+      response_format:
+        connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "ovhcloud"
+          ? {
+              type: "json_schema",
+              json_schema: { name: "quote_trade_order_plan", strict: true, schema: PLAN_RESPONSE_SCHEMA },
+            }
+          : { type: "json_object" },
     };
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -1249,22 +1762,30 @@ export class LlmProviderClient {
     if (connection.effectiveApiKey) headers.Authorization = `Bearer ${connection.effectiveApiKey}`;
     if (connection.provider === "openrouter") headers["X-Title"] = "Quote.Trade local strategy planner";
 
-    const response = await this.post(`${connection.effectiveBaseUrl}/chat/completions`, body, { headers, timeout: 45_000 });
+    const response = await this.post(`${connection.effectiveBaseUrl}/chat/completions`, body, {
+      headers,
+      timeout: 45_000,
+    });
     return parseJsonObject(response.data?.choices?.[0]?.message?.content);
   }
 
-  private async callAnthropic(connection: ResolvedLlmConnection, request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number }): Promise<RawLlmPlan> {
+  private async callAnthropic(
+    connection: ResolvedLlmConnection,
+    request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number },
+  ): Promise<RawLlmPlan> {
     const body = {
       model: connection.model,
       system: request.systemPrompt,
       max_tokens: request.maxTokens ?? 1400,
       temperature: request.temperature ?? 0.1,
       messages: [{ role: "user", content: request.userPrompt }],
-      tools: [{
-        name: "propose_order_plan",
-        description: "Return a proposed Quote.Trade local bot order plan in exact command format.",
-        input_schema: PLAN_RESPONSE_SCHEMA,
-      }],
+      tools: [
+        {
+          name: "propose_order_plan",
+          description: "Return a proposed Quote.Trade local bot order plan in exact command format.",
+          input_schema: PLAN_RESPONSE_SCHEMA,
+        },
+      ],
       tool_choice: { type: "tool", name: "propose_order_plan" },
     };
     const response = await this.post(`${connection.effectiveBaseUrl}/messages`, body, {
@@ -1276,13 +1797,23 @@ export class LlmProviderClient {
       timeout: 45_000,
     });
     const content = response.data?.content ?? [];
-    const toolUse = Array.isArray(content) ? content.find((part: any) => part?.type === "tool_use" && part?.name === "propose_order_plan") : undefined;
+    const toolUse = Array.isArray(content)
+      ? content.find((part: any) => part?.type === "tool_use" && part?.name === "propose_order_plan")
+      : undefined;
     if (toolUse?.input) return parseJsonObject(toolUse.input);
-    const text = Array.isArray(content) ? content.map((part: any) => part?.text).filter(Boolean).join("\n") : response.data;
+    const text = Array.isArray(content)
+      ? content
+          .map((part: any) => part?.text)
+          .filter(Boolean)
+          .join("\n")
+      : response.data;
     return parseJsonObject(text);
   }
 
-  private async callGemini(connection: ResolvedLlmConnection, request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number }): Promise<RawLlmPlan> {
+  private async callGemini(
+    connection: ResolvedLlmConnection,
+    request: { systemPrompt: string; userPrompt: string; temperature?: number; maxTokens?: number },
+  ): Promise<RawLlmPlan> {
     const body = {
       systemInstruction: { parts: [{ text: request.systemPrompt }] },
       contents: [{ role: "user", parts: [{ text: request.userPrompt }] }],
@@ -1293,11 +1824,18 @@ export class LlmProviderClient {
         responseSchema: GEMINI_PLAN_RESPONSE_SCHEMA,
       },
     };
-    const response = await this.post(`${connection.effectiveBaseUrl}/models/${encodeURIComponent(connection.model)}:generateContent?key=${encodeURIComponent(connection.effectiveApiKey as string)}`, body, {
-      headers: { "Content-Type": "application/json" },
-      timeout: 45_000,
-    });
-    const text = response.data?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text).filter(Boolean).join("\n");
+    const response = await this.post(
+      `${connection.effectiveBaseUrl}/models/${encodeURIComponent(connection.model)}:generateContent?key=${encodeURIComponent(connection.effectiveApiKey as string)}`,
+      body,
+      {
+        headers: { "Content-Type": "application/json" },
+        timeout: 45_000,
+      },
+    );
+    const text = response.data?.candidates?.[0]?.content?.parts
+      ?.map((part: any) => part?.text)
+      .filter(Boolean)
+      .join("\n");
     return parseJsonObject(text);
   }
 }
@@ -1399,7 +1937,12 @@ function userPrompt(input: StrategyPlannerInput): string {
 function normalizePlan(raw: RawLlmPlan): { summary: string; commands: string[]; riskNotes: string[] } {
   return {
     summary: String(raw.summary ?? "Proposed local bot commands."),
-    commands: Array.isArray(raw.commands) ? raw.commands.map(String).map((command) => command.trim()).filter(Boolean) : [],
+    commands: Array.isArray(raw.commands)
+      ? raw.commands
+          .map(String)
+          .map((command) => command.trim())
+          .filter(Boolean)
+      : [],
     riskNotes: Array.isArray(raw.riskNotes) ? raw.riskNotes.map(String).filter(Boolean) : [],
   };
 }
@@ -1411,8 +1954,13 @@ export class LlmStrategyPlanner {
   ) {}
 
   async plan(input: StrategyPlannerInput): Promise<ValidatedStrategyPlan> {
-    const connections = this.configStore.resolvePlanConnections(input.ownerId, input.provider, input.allowFallback !== false);
-    if (!connections.length) throw new Error("No LLM provider is configured. Set an API key env var or run llm:connect / /llmconnect first.");
+    const connections = this.configStore.resolvePlanConnections(
+      input.ownerId,
+      input.provider,
+      input.allowFallback !== false,
+    );
+    if (!connections.length)
+      throw new Error("No LLM provider is configured. Set an API key env var or run llm:connect / /llmconnect first.");
 
     const attemptedProviders: string[] = [];
     let lastError: any;
@@ -1436,7 +1984,15 @@ export class LlmStrategyPlanner {
               now: input.now,
             })
           : [];
-        return { provider: connection.provider, model: connection.model, summary: plan.summary, commands: plan.commands, riskNotes: plan.riskNotes, actions, attemptedProviders };
+        return {
+          provider: connection.provider,
+          model: connection.model,
+          summary: plan.summary,
+          commands: plan.commands,
+          riskNotes: plan.riskNotes,
+          actions,
+          attemptedProviders,
+        };
       } catch (error: any) {
         lastError = error;
 
@@ -1452,6 +2008,8 @@ export class LlmStrategyPlanner {
       }
     }
 
-    throw new Error(`All configured LLM providers failed or produced invalid commands. Attempted: ${attemptedProviders.join(", ")}. Last error: ${lastError?.message ?? lastError}`);
+    throw new Error(
+      `All configured LLM providers failed or produced invalid commands. Attempted: ${attemptedProviders.join(", ")}. Last error: ${lastError?.message ?? lastError}`,
+    );
   }
 }

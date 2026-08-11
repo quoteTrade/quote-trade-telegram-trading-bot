@@ -1,30 +1,79 @@
-const assert = require('node:assert');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const { PositionStore } = require('../dist/triggers/position-store');
-const { PositionSyncService } = require('../dist/triggers/position-sync');
+"use strict";
 
-function tmp(name) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'qt-position-sync-test-'));
-  return path.join(d, name);
+const { describe, it, after } = require("node:test");
+const assert = require("node:assert/strict");
+const { tempFile, cleanupTempDirs } = require("./helpers/tmp");
+const { PositionStore } = require("../dist/triggers/position-store");
+const { PositionSyncService } = require("../dist/triggers/position-sync");
+
+after(cleanupTempDirs);
+
+/** A position store backed by its own throwaway file, so cases stay independent. */
+function makeStore() {
+  return new PositionStore(tempFile("positions.json", "qt-tg-position-sync-"));
 }
 
-(async () => {
-  const store = new PositionStore(tmp('positions.json'));
-  store.upsert({ symbol: 'BTC', positionAmt: 1, availableQuantity: 1, markPrice: 100 });
-  assert.strictEqual(store.get('BTC').netQty, 1);
+/** Minimal account client: every `get` resolves to the same positions payload. */
+function accountClient(positions) {
+  return { get: async () => ({ positions }) };
+}
 
-  const emptySync = new PositionSyncService({ get: async () => ({ positions: [] }) }, store);
-  const emptyCount = await emptySync.refresh();
-  assert.strictEqual(emptyCount, 0);
-  assert.strictEqual(store.get('BTC'), undefined, 'authoritative empty position refresh must clear stale cached positions');
+const BTC = { symbol: "BTC", positionAmt: 1, availableQuantity: 1, markPrice: 100 };
+const ETH = { symbol: "ETH", positionAmt: 2, availableQuantity: 2, markPrice: 50 };
 
-  const replaceSync = new PositionSyncService({ get: async () => ({ positions: [{ symbol: 'ETH', positionAmt: 2, availableQuantity: 2, markPrice: 50 }] }) }, store);
-  const count = await replaceSync.refresh();
-  assert.strictEqual(count, 1);
-  assert.strictEqual(store.get('ETH').netQty, 2);
-  assert.strictEqual(store.get('BTC'), undefined, 'authoritative refresh should replace stale symbols not present in the account response');
+describe("PositionStore", () => {
+  it("exposes an upserted position under its symbol with the signed net quantity", () => {
+    const store = makeStore();
+    store.upsert({ ...BTC });
+    assert.equal(store.get("BTC").netQty, 1);
+  });
+});
 
-  console.log('position-sync tests passed');
-})();
+describe("PositionSyncService.refresh", () => {
+  it("reports zero synced positions when the account holds none", async () => {
+    const store = makeStore();
+    store.upsert({ ...BTC });
+
+    const count = await new PositionSyncService(accountClient([]), store).refresh();
+
+    assert.equal(count, 0);
+  });
+
+  it("clears stale cached positions when the account reports none", async () => {
+    const store = makeStore();
+    store.upsert({ ...BTC });
+
+    await new PositionSyncService(accountClient([]), store).refresh();
+
+    assert.equal(store.get("BTC"), undefined, "authoritative empty position refresh must clear stale cached positions");
+  });
+
+  it("reports the number of positions returned by the account", async () => {
+    const store = makeStore();
+
+    const count = await new PositionSyncService(accountClient([{ ...ETH }]), store).refresh();
+
+    assert.equal(count, 1);
+  });
+
+  it("caches each position returned by the account with its net quantity", async () => {
+    const store = makeStore();
+
+    await new PositionSyncService(accountClient([{ ...ETH }]), store).refresh();
+
+    assert.equal(store.get("ETH").netQty, 2);
+  });
+
+  it("drops a cached symbol that is absent from the account response", async () => {
+    const store = makeStore();
+    store.upsert({ ...BTC });
+
+    await new PositionSyncService(accountClient([{ ...ETH }]), store).refresh();
+
+    assert.equal(
+      store.get("BTC"),
+      undefined,
+      "authoritative refresh should replace stale symbols not present in the account response",
+    );
+  });
+});

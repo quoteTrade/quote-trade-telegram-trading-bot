@@ -81,7 +81,8 @@ export class UserDataStreamService extends EventEmitter {
   }
 
   private requestToken(): string | undefined {
-    const raw = typeof this.options.requestToken === "function" ? this.options.requestToken() : this.options.requestToken;
+    const raw =
+      typeof this.options.requestToken === "function" ? this.options.requestToken() : this.options.requestToken;
     const token = raw || (this.options.allowEnvFallback ? process.env.TRADE_API_KEY : undefined);
     return token && String(token).trim() ? String(token).trim() : undefined;
   }
@@ -107,7 +108,10 @@ export class UserDataStreamService extends EventEmitter {
     if (!url || !token) {
       if (!this.warnedMissingConfig) {
         this.warnedMissingConfig = true;
-        this.emit("warning", `Account stream not started${this.options.ownerId ? ` for owner ${this.options.ownerId}` : ""}: missing ${!url ? "LISTEN_KEY_WS_URL" : "session api key"}.`);
+        this.emit(
+          "warning",
+          `Account stream not started${this.options.ownerId ? ` for owner ${this.options.ownerId}` : ""}: missing ${!url ? "LISTEN_KEY_WS_URL" : "session api key"}.`,
+        );
       }
       return false;
     }

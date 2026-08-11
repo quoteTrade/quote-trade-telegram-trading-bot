@@ -45,7 +45,9 @@ interface SymbolState {
 }
 
 function normalizeSymbol(symbol: string): string {
-  const value = String(symbol ?? "").trim().toUpperCase();
+  const value = String(symbol ?? "")
+    .trim()
+    .toUpperCase();
   if (!value) throw new Error("symbol is required");
   return value;
 }
@@ -55,7 +57,13 @@ function wsIsOpen(ws: any): boolean {
 }
 
 function wsIsOpenOrConnecting(ws: any): boolean {
-  return !!ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING || ws.readyState === 0 || ws.readyState === 1);
+  return (
+    !!ws &&
+    (ws.readyState === WebSocket.OPEN ||
+      ws.readyState === WebSocket.CONNECTING ||
+      ws.readyState === 0 ||
+      ws.readyState === 1)
+  );
 }
 
 function asPositiveNumber(...values: unknown[]): number | undefined {
@@ -87,7 +95,7 @@ function normalizeFeedSymbol(raw: unknown): string | undefined {
   // symbol instead of subscribing to thousands of full market names. For
   // concatenated names, strip only stable/fiat quote suffixes so assets such as
   // STETH/WBTC are not accidentally normalized to ST/W.
-  const separated = text.split(/[/:_\-]/).filter(Boolean);
+  const separated = text.split(/[/:_-]/).filter(Boolean);
   if (separated.length > 1) return normalizeSymbol(separated[0]);
 
   for (const suffix of COMMON_QUOTE_SUFFIXES) {
@@ -100,14 +108,16 @@ function normalizeFeedSymbol(raw: unknown): string | undefined {
 
 function extractSymbol(msg: any): string | undefined {
   const book = extractBook(msg);
-  const raw = book?.s ?? book?.symbol ?? book?.ticker ?? book?.pair ?? msg?.s ?? msg?.symbol ?? msg?.ticker ?? msg?.pair;
+  const raw =
+    book?.s ?? book?.symbol ?? book?.ticker ?? book?.pair ?? msg?.s ?? msg?.symbol ?? msg?.ticker ?? msg?.pair;
   return normalizeFeedSymbol(raw);
 }
 
 function rawBookLevels(book: any, side: "bid" | "ask"): any[] {
-  const raw = side === "ask"
-    ? (book?.asks ?? book?.a ?? book?.sell ?? book?.sells)
-    : (book?.bids ?? book?.b ?? book?.buy ?? book?.buys);
+  const raw =
+    side === "ask"
+      ? (book?.asks ?? book?.a ?? book?.sell ?? book?.sells)
+      : (book?.bids ?? book?.b ?? book?.buy ?? book?.buys);
   return Array.isArray(raw) ? raw : [];
 }
 
@@ -116,7 +126,16 @@ function firstLevelPrice(level: any): number | undefined {
 }
 
 function firstLevelQuantity(level: any): number | undefined {
-  return asPositiveNumber(level?.q, level?.qty, level?.quantity, level?.size, level?.amount, level?.dp, level?.d, Array.isArray(level) ? level[1] : undefined);
+  return asPositiveNumber(
+    level?.q,
+    level?.qty,
+    level?.quantity,
+    level?.size,
+    level?.amount,
+    level?.dp,
+    level?.d,
+    Array.isArray(level) ? level[1] : undefined,
+  );
 }
 
 function quoteFromBook(symbol: string, msg: any): PriceQuote | undefined {
@@ -124,9 +143,6 @@ function quoteFromBook(symbol: string, msg: any): PriceQuote | undefined {
   const bids = rawBookLevels(book, "bid");
   const asks = rawBookLevels(book, "ask");
   if (!bids.length && !asks.length) return undefined;
-
-  const messageSymbol = extractSymbol(msg);
-  if (messageSymbol && messageSymbol !== symbol) return undefined;
 
   // Some L2 feeds emit deltas or side-only snapshots. Keep those frames so a
   // BUY can be evaluated from ask-side depth and a SELL can be evaluated from
@@ -218,10 +234,6 @@ export class PriceFeedService {
    */
   ensureActive(): void {
     if (this.activeSymbolCount() <= 0) return;
-    if (this.socketIdleTimer) {
-      clearTimeout(this.socketIdleTimer);
-      this.socketIdleTimer = undefined;
-    }
     this.stopped = false;
     this.ensureSocket();
     if (wsIsOpen(this.ws)) {
@@ -280,11 +292,15 @@ export class PriceFeedService {
         stop?.();
         reject(new Error(`Timed out waiting for ${symbol} price`));
       }, timeoutMs);
-      stop = this.subscribe(symbol, (quote) => {
-        clearTimeout(timer);
-        stop?.();
-        resolve(quote);
-      }, 0);
+      stop = this.subscribe(
+        symbol,
+        (quote) => {
+          clearTimeout(timer);
+          stop?.();
+          resolve(quote);
+        },
+        0,
+      );
     });
   }
 
@@ -313,7 +329,9 @@ export class PriceFeedService {
   }
 
   private maxSnapshotAgeMs(): number {
-    const configured = this.options.maxSnapshotAgeMs ?? Number(process.env.PRICE_FEED_MAX_SNAPSHOT_AGE_MS ?? process.env.TRIGGER_MAX_L2_AGE_MS ?? 5000);
+    const configured =
+      this.options.maxSnapshotAgeMs ??
+      Number(process.env.PRICE_FEED_MAX_SNAPSHOT_AGE_MS ?? process.env.TRIGGER_MAX_L2_AGE_MS ?? 5000);
     return Number.isFinite(configured) && configured > 0 ? configured : 0;
   }
 
@@ -351,7 +369,9 @@ export class PriceFeedService {
       }
 
       ws.on("open", () => {
-        for (const symbol of this.activeSymbols()) this.sendSubscribe(symbol);
+        // Forced: a socket that has just opened holds no server-side subscriptions, so
+        // state left over from a previous socket must never suppress these frames.
+        for (const symbol of this.activeSymbols()) this.sendSubscribe(symbol, true);
       });
       ws.on("message", (data: WebSocket.RawData) => this.onMessage(data));
       ws.on("close", () => {
@@ -361,7 +381,14 @@ export class PriceFeedService {
       });
       ws.on("error", (error: any) => {
         this.warn(`Price feed warning: ${error?.message ?? error}`);
-        if (!this.stopped && this.activeSymbolCount() > 0 && this.ws === ws && !wsIsOpenOrConnecting(ws)) this.scheduleReconnect();
+        if (!this.stopped && this.activeSymbolCount() > 0 && this.ws === ws && !wsIsOpenOrConnecting(ws)) {
+          // Abandoning this socket, so forget what it was subscribed to. Only `close`
+          // did this before. A real ws always emits close after error, but when it does
+          // not, the stale set made the replacement socket's open handler skip every
+          // symbol as "already subscribed" and the feed went quiet with no error.
+          this.subscribedSymbols.clear();
+          this.scheduleReconnect();
+        }
       });
     } catch (error: any) {
       this.ws = undefined;
@@ -372,7 +399,10 @@ export class PriceFeedService {
   }
 
   private activeSymbols(): string[] {
-    return [...this.symbols.values()].filter((state) => state.subscribers.size > 0).map((state) => state.symbol).sort();
+    return [...this.symbols.values()]
+      .filter((state) => state.subscribers.size > 0)
+      .map((state) => state.symbol)
+      .sort();
   }
 
   private subscribeSymbol(symbol: string): void {
@@ -381,20 +411,8 @@ export class PriceFeedService {
     this.sendSubscribe(symbol);
   }
 
-  private sendSubscribe(symbol?: string, force = false): void {
+  private sendSubscribe(symbol: string, force = false): void {
     if (!wsIsOpen(this.ws)) return;
-
-    if (!symbol) {
-      if (process.env.PRICE_DEBUG === "true") {
-        console.log("[PRICE_FEED_SOCKET_SUBSCRIBE_SKIP]", {
-          reason: "missing-symbol",
-          symbol,
-          socketId: this.currentSocketId,
-          subscribedSymbols: Array.from(this.subscribedSymbols),
-        });
-      }
-      return;
-    }
 
     if (!force && this.subscribedSymbols.has(symbol)) {
       if (process.env.PRICE_DEBUG === "true") {
@@ -457,9 +475,9 @@ export class PriceFeedService {
     if (!wsIsOpen(this.ws)) return;
 
     const activeSymbols = Array.from(this.symbols.entries())
-        .filter(([symbol, state]) => symbol !== excludeSymbol && state.subscribers.size > 0)
-        .map(([symbol]) => symbol)
-        .sort();
+      .filter(([symbol, state]) => symbol !== excludeSymbol && state.subscribers.size > 0)
+      .map(([symbol]) => symbol)
+      .sort();
 
     if (process.env.PRICE_DEBUG === "true") {
       console.log("[PRICE_FEED_RESUBSCRIBE_REMAINING]", {
@@ -498,7 +516,15 @@ export class PriceFeedService {
         continue;
       }
 
-      if (frame && !extractSymbol(frame) && typeof frame === "object" && !Array.isArray(frame) && !frame.bids && !frame.asks && !frame.book) {
+      if (
+        frame &&
+        !extractSymbol(frame) &&
+        typeof frame === "object" &&
+        !Array.isArray(frame) &&
+        !frame.bids &&
+        !frame.asks &&
+        !frame.book
+      ) {
         const entries = Object.entries(frame).filter(([, value]) => value && typeof value === "object");
         if (entries.length) {
           for (const [symbol, book] of entries) expanded.push({ ...(book as any), symbol });
@@ -521,6 +547,12 @@ export class PriceFeedService {
 
     const quote = quoteFromBook(symbol, frame);
 
+    // Guard before logging. quoteFromBook returns undefined for ordinary frames --
+    // an empty book, a book with nothing on one side, non-positive prices -- and
+    // reading quote.symbol above this line threw a TypeError that onMessage's catch
+    // swallowed, abandoning every remaining frame in the same websocket message.
+    if (!quote) return;
+
     if (process.env.PRICE_DEBUG === "true") {
       console.log("[PRICE_FEED_DELIVER]", {
         socketId: this.currentSocketId,
@@ -529,7 +561,6 @@ export class PriceFeedService {
       });
     }
 
-    if (!quote) return;
     state.lastQuote = quote;
     for (const id of state.subscribers.keys()) this.deliverToSubscriber(state, id, quote);
   }

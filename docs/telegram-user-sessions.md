@@ -23,6 +23,11 @@ Use this only in a private chat with the bot:
 /disconnect
 ```
 
+When only the API key and secret are supplied, the bot detects the signing
+method automatically. Ed25519 PKCS#8 secrets are recognized in PEM or base64
+form; other secrets default to SHA-256. The optional signing argument remains
+available as an explicit override.
+
 `/connectkey` is rejected in group chats so credentials are not intentionally saved from a public message. In private chats, the bot attempts to delete the `/connectkey` message after saving the encrypted session so the raw API key/secret do not remain in the chat history. The session is stored encrypted with AES-256-GCM. Set one of these encryption secrets before running the bot:
 
 ```bash

@@ -1,9 +1,9 @@
-import { PriceFeedService, PriceFeedSvc } from "./utils/price-feed.service";
-import { UserDataStreamService, UserDataStreamSvc } from "./utils/user-data-stream.service";
-import { PositionStore } from "./triggers/position-store";
-import { TriggerStore } from "./triggers/trigger-store";
-import { TriggerEngine } from "./triggers/trigger-engine";
-import {OrderHistoryStore} from "./triggers/order-history-store";
+import type { OrderHistoryStore } from "./triggers/order-history-store";
+import type { PositionStore } from "./triggers/position-store";
+import type { TriggerEngine } from "./triggers/trigger-engine";
+import type { TriggerStore } from "./triggers/trigger-store";
+import { type PriceFeedService, PriceFeedSvc } from "./utils/price-feed.service";
+import { type UserDataStreamService, UserDataStreamSvc } from "./utils/user-data-stream.service";
 
 export class TriggerRuntime {
   private stops = new Map<string, () => void>();
@@ -83,19 +83,23 @@ export class TriggerRuntime {
   watchSymbol(symbol: string): void {
     symbol = symbol.toUpperCase();
     if (this.stops.has(symbol)) return;
-    const stop = this.priceFeed.subscribe(symbol, (q) => {
-      void this.engine.processTick({
-        symbol: q.symbol,
-        price: q.price,
-        bid: q.bid,
-        ask: q.ask,
-        bidQty: q.bidQty,
-        askQty: q.askQty,
-        mark: q.mark,
-        ts: q.ts,
-        orderBook: q.orderBook,
-      });
-    }, this.priceFeedMinIntervalMs());
+    const stop = this.priceFeed.subscribe(
+      symbol,
+      (q) => {
+        void this.engine.processTick({
+          symbol: q.symbol,
+          price: q.price,
+          bid: q.bid,
+          ask: q.ask,
+          bidQty: q.bidQty,
+          askQty: q.askQty,
+          mark: q.mark,
+          ts: q.ts,
+          orderBook: q.orderBook,
+        });
+      },
+      this.priceFeedMinIntervalMs(),
+    );
     this.stops.set(symbol, stop);
   }
 

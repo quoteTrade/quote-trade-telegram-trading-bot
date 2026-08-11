@@ -21,6 +21,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function positiveMs(raw: unknown, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function telegramIpFamily(): 4 | 6 {
+  return String(process.env.TELEGRAM_IP_FAMILY ?? "4").trim() === "6" ? 6 : 4;
+}
+
 /**
  * Small Telegram Bot API polling client used to avoid deprecated request-based
  * transitive dependencies. It intentionally implements only the methods this bot
@@ -34,7 +43,10 @@ export default class TelegramBot {
   private stopped = false;
   private pollingStarted = false;
 
-  constructor(private readonly token: string, private readonly options: TelegramBotOptions = {}) {
+  constructor(
+    private readonly token: string,
+    private readonly options: TelegramBotOptions = {},
+  ) {
     if (!token) throw new Error("Telegram bot token is required");
     this.apiBaseUrl = `${options.apiBaseUrl ?? "https://api.telegram.org"}/bot${token}`;
     if (options.polling) this.startPolling();
@@ -50,23 +62,39 @@ export default class TelegramBot {
     this.eventHandlers.set(event, list);
   }
 
+  /** Route a trusted UI-generated command through the same handlers as Telegram text. */
+  dispatchText(msg: any, text: string): void {
+    this.handleMessage({ ...msg, text });
+  }
+
   async sendMessage(chatId: string | number, text: string, options: TelegramSendMessageOptions = {}): Promise<any> {
     return this.call("sendMessage", { chat_id: chatId, text, ...options });
   }
 
   async answerCallbackQuery(callbackQueryId: string, options: Record<string, unknown> = {}): Promise<any> {
-    return this.call("answerCallbackQuery", { callback_query_id: callbackQueryId, ...options });
+    return this.call(
+      "answerCallbackQuery",
+      { callback_query_id: callbackQueryId, ...options },
+      positiveMs(process.env.TELEGRAM_CALLBACK_TIMEOUT_MS, 3_000),
+    );
   }
 
   async deleteMessage(chatId: string | number, messageId: string | number): Promise<any> {
-    return this.call("deleteMessage", { chat_id: chatId, message_id: messageId });
+    // Deleting a sensitive command is best-effort and must never hold up the
+    // command itself for the full Telegram request timeout.
+    return this.call("deleteMessage", { chat_id: chatId, message_id: messageId }, 3_000);
   }
 
   stopPolling(): void {
     this.stopped = true;
   }
 
-  private startPolling(): void {
+  /**
+   * Open the long-poll loop. Public so an entry point can construct the bot
+   * inertly (`polling: false`), register its handlers, and only then connect.
+   * Re-entrant callers are ignored, so calling it twice cannot double the loop.
+   */
+  startPolling(): void {
     if (this.pollingStarted) return;
     this.pollingStarted = true;
     this.stopped = false;
@@ -111,9 +139,32 @@ export default class TelegramBot {
     for (const handler of this.eventHandlers.get(event) ?? []) handler(payload);
   }
 
-  private async call(method: string, payload: Record<string, unknown>): Promise<any> {
-    const response = await axios.post(`${this.apiBaseUrl}/${method}`, payload, { timeout: 35_000 });
-    if (!response.data?.ok) throw new Error(response.data?.description ?? `Telegram API ${method} failed`);
-    return response.data.result;
+  private async call(method: string, payload: Record<string, unknown>, timeoutMs = 35_000): Promise<any> {
+    const startedAt = Date.now();
+    let succeeded = false;
+    try {
+      const response = await axios.post(`${this.apiBaseUrl}/${method}`, payload, {
+        timeout: timeoutMs,
+        // Some production hosts advertise IPv6 but have an unreliable route to
+        // Telegram. Prefer IPv4 unless the deployment explicitly selects IPv6.
+        family: telegramIpFamily(),
+      });
+      if (!response.data?.ok) throw new Error(response.data?.description ?? `Telegram API ${method} failed`);
+      succeeded = true;
+      return response.data.result;
+    } catch (error: any) {
+      const telegramDescription = error?.response?.data?.description;
+      if (telegramDescription) {
+        const status = error?.response?.status;
+        throw new Error(`Telegram API ${method}${status ? ` (${status})` : ""}: ${telegramDescription}`);
+      }
+      throw error;
+    } finally {
+      const elapsedMs = Date.now() - startedAt;
+      const slowMs = positiveMs(process.env.SLOW_REQUEST_LOG_MS, 2_000);
+      if (method !== "getUpdates" && elapsedMs >= slowMs) {
+        console.warn("[SLOW_TELEGRAM_REQUEST]", { method, elapsedMs, succeeded });
+      }
+    }
   }
 }

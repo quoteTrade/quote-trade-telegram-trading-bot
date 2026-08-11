@@ -1,6 +1,15 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createCipheriv, createDecipheriv, createHash, createPrivateKey, randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { quoteTradeStateRoot, safeOwnerKey, userStateFile } from "./user-state";
 
 export type SigningAlgorithm = "sha256" | "hmac-sha256" | "ed25519";
@@ -51,7 +60,9 @@ export interface TradingSessionSummary {
   pathKey: string;
 }
 
-function now(): number { return Date.now(); }
+function now(): number {
+  return Date.now();
+}
 
 export function redacted(value?: string): string {
   if (!value) return "not set";
@@ -60,19 +71,51 @@ export function redacted(value?: string): string {
 }
 
 function normalizeSigningAlgorithm(raw?: string): SigningAlgorithm {
-  const value = String(raw ?? "sha256").trim().toLowerCase();
+  const value = String(raw ?? "sha256")
+    .trim()
+    .toLowerCase();
   if (["sha256", "hmac", "hmac-sha256", "hmac_sha256"].includes(value)) return "sha256";
   if (["ed25519", "ed-25519"].includes(value)) return "ed25519";
   throw new Error("signing algorithm must be sha256/hmac-sha256 or ed25519");
 }
 
+/**
+ * Detect the signing method without making a network request. Ed25519 secrets
+ * supported by this bot are PKCS#8 private keys (PEM or base64-encoded DER),
+ * which Node can identify reliably. Everything else retains the SHA-256 default.
+ */
+export function detectSigningAlgorithm(apiSecret: string): SigningAlgorithm {
+  const secret = String(apiSecret ?? "").trim();
+  if (!secret) throw new Error("api secret is required");
+
+  try {
+    const pem = secret.includes("BEGIN PRIVATE KEY")
+      ? secret.replace(/\\n/g, "\n")
+      : `-----BEGIN PRIVATE KEY-----\n${
+          secret
+            .replace(/\s+/g, "")
+            .match(/.{1,64}/g)
+            ?.join("\n") ?? secret
+        }\n-----END PRIVATE KEY-----`;
+    const key = createPrivateKey(pem);
+    if (key.asymmetricKeyType === "ed25519") return "ed25519";
+  } catch {
+    // HMAC secrets are arbitrary strings and are not parseable private keys.
+  }
+
+  return "sha256";
+}
+
 function keyMaterial(): string {
-  const material = process.env.TELEGRAM_SESSION_ENCRYPTION_KEY
-    || process.env.QUOTE_TRADE_SESSION_KEY
-    || process.env.SESSION_ENCRYPTION_KEY
-    || process.env.TELEGRAM_BOT_TOKEN;
+  const material =
+    process.env.TELEGRAM_SESSION_ENCRYPTION_KEY ||
+    process.env.QUOTE_TRADE_SESSION_KEY ||
+    process.env.SESSION_ENCRYPTION_KEY ||
+    process.env.TELEGRAM_BOT_TOKEN;
   if (!material || !String(material).trim()) {
-    throw new Error("TELEGRAM_SESSION_ENCRYPTION_KEY, QUOTE_TRADE_SESSION_KEY, SESSION_ENCRYPTION_KEY, or TELEGRAM_BOT_TOKEN is required to encrypt trading sessions");
+    throw new Error(
+      "TELEGRAM_SESSION_ENCRYPTION_KEY, QUOTE_TRADE_SESSION_KEY, SESSION_ENCRYPTION_KEY, or TELEGRAM_BOT_TOKEN is required to encrypt trading sessions",
+    );
   }
   return String(material);
 }
@@ -111,11 +154,17 @@ function writeJsonFile(file: string, data: unknown): void {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   renameSync(tmp, file);
-  try { chmodSync(file, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+  try {
+    chmodSync(file, 0o600);
+  } catch {
+    /* best effort on non-POSIX filesystems */
+  }
 }
 
 export class TradingSessionStore {
-  constructor(private readonly fileForOwner: (ownerId: string) => string = (ownerId) => userStateFile(ownerId, "session.json")) {}
+  constructor(
+    private readonly fileForOwner: (ownerId: string) => string = (ownerId) => userStateFile(ownerId, "session.json"),
+  ) {}
 
   filePath(ownerId: string): string {
     return this.fileForOwner(String(ownerId));
@@ -127,7 +176,10 @@ export class TradingSessionStore {
     const owners: string[] = [];
     for (const dirent of readdirSync(usersDir, { withFileTypes: true })) {
       if (!dirent.isDirectory()) continue;
-      const session = readJsonFile<StoredTradingSession | undefined>(join(usersDir, dirent.name, "session.json"), undefined);
+      const session = readJsonFile<StoredTradingSession | undefined>(
+        join(usersDir, dirent.name, "session.json"),
+        undefined,
+      );
       if (session?.version === 1 && session.ownerId) owners.push(String(session.ownerId));
     }
     return [...new Set(owners)].sort();
@@ -147,7 +199,9 @@ export class TradingSessionStore {
       ownerId: owner,
       apiKeyEncrypted: encryptSecret(apiKey),
       apiSecretEncrypted: encryptSecret(apiSecret),
-      signingAlgorithm: normalizeSigningAlgorithm(String(input.signingAlgorithm ?? existing?.signingAlgorithm ?? "sha256")),
+      signingAlgorithm: normalizeSigningAlgorithm(
+        String(input.signingAlgorithm ?? existing?.signingAlgorithm ?? "sha256"),
+      ),
       account: input.account !== undefined ? String(input.account).trim() || undefined : existing?.account,
       label: input.label !== undefined ? String(input.label).trim() || undefined : existing?.label,
       createdAt: existing?.createdAt ?? now(),
@@ -160,7 +214,7 @@ export class TradingSessionStore {
 
   getStored(ownerId: string): StoredTradingSession | undefined {
     const session = readJsonFile<StoredTradingSession | undefined>(this.filePath(ownerId), undefined);
-    if (!session || session.version !== 1) return undefined;
+    if (session?.version !== 1) return undefined;
     return session;
   }
 
@@ -189,7 +243,10 @@ export class TradingSessionStore {
 
   require(ownerId: string): ResolvedTradingSession {
     const session = this.get(ownerId);
-    if (!session) throw new Error("No Quote.Trade session connected for this Telegram user. Use /connectkey in a private chat first.");
+    if (!session)
+      throw new Error(
+        "No Quote.Trade session connected for this Telegram user. Use /connectkey in a private chat first.",
+      );
     return session;
   }
 
@@ -209,13 +266,9 @@ export class TradingSessionStore {
   summary(ownerId: string): TradingSessionSummary {
     const stored = this.getStored(ownerId);
     let resolved: ResolvedTradingSession | undefined;
-    if (stored) {
-      try {
-        resolved = this.get(ownerId);
-      } catch {
-        resolved = undefined;
-      }
-    }
+    // get() swallows every decrypt failure and returns undefined, so there is
+    // nothing here to catch.
+    if (stored) resolved = this.get(ownerId);
     return {
       ownerId: String(ownerId),
       connected: !!resolved,

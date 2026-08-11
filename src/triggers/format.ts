@@ -1,8 +1,9 @@
-import { deriveTriggerDirection, formatUsd, priceTargetForTrigger, TriggerOrder } from "./types";
-import { PositionStore } from "./position-store";
+import type { PositionStore } from "./position-store";
+import { deriveTriggerDirection, formatUsd, priceTargetForTrigger, type TriggerOrder } from "./types";
 
-function dateLabel(ts?: number): string { return ts ? new Date(ts).toISOString() : ""; }
-function compact(value: unknown): string { return value === undefined || value === null || value === "" ? "" : String(value); }
+function compact(value: unknown): string {
+  return value === undefined || value === null || value === "" ? "" : String(value);
+}
 
 function orderTypeText(order: any): string {
   const type = String(order.orderType ?? order.ordType ?? order.type ?? "");
@@ -22,7 +23,7 @@ function orderStatusText(order: any): string {
 }
 
 function formatOrderLine(order: any, index: number): string {
-  const qty = order.cumQty && Number(order.cumQty) > 0 ? order.cumQty : order.quantity ?? "-";
+  const qty = order.cumQty && Number(order.cumQty) > 0 ? order.cumQty : (order.quantity ?? "-");
   const price = order.fillPrice ?? order.avgPx ?? order.lastPx ?? order.price ?? "-";
   const id = order.orderId ?? order.clientOrderId ?? "-";
 
@@ -35,13 +36,7 @@ export function formatTrigger(trigger: TriggerOrder): string {
     : trigger.closePercentage !== undefined
       ? `${trigger.closePercentage}% position`
       : compact(trigger.quantity);
-  const pieces = [
-    trigger.id,
-    trigger.status,
-    trigger.kind,
-    trigger.symbol,
-    trigger.side,
-  ];
+  const pieces = [trigger.id, trigger.status, trigger.kind, trigger.symbol, trigger.side];
 
   const dir = deriveTriggerDirection(trigger);
   const target = priceTargetForTrigger(trigger);
@@ -61,7 +56,7 @@ export function formatTrigger(trigger: TriggerOrder): string {
     trigger.meta?.bracketChildrenCreated ? "bracket=exits-created" : "",
     trigger.activationValue ? `after=${trigger.activationValue}${trigger.activationMode === "PERCENT" ? "%" : ""}` : "",
     trigger.lockValue !== undefined ? `lock=${trigger.lockValue}${trigger.lockMode === "PERCENT" ? "%" : ""}` : "",
-    trigger.triggerAt ? `at=${dateLabel(trigger.triggerAt)}` : "",
+    trigger.triggerAt ? `at=${new Date(trigger.triggerAt).toISOString()}` : "",
     trigger.cancelTriggerId ? `cancel=${trigger.cancelTriggerId}` : "",
     trigger.cancelGroupId ? `cancelGroup=${trigger.cancelGroupId}` : "",
     trigger.riskMetric ? `risk=${trigger.riskMetric}:${trigger.riskThreshold}` : "",

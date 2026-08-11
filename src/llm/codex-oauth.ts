@@ -41,7 +41,11 @@ function timeoutMs(name: string, fallback: number): number {
 export function codexHomeForOwner(ownerId: string): string {
   const dir = join(userStateDir(ownerId), "codex");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { chmodSync(dir, 0o700); } catch { /* best effort */ }
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    /* best effort */
+  }
   return dir;
 }
 
@@ -52,7 +56,11 @@ export function codexAuthFile(ownerId: string): string {
 function codexWorkspace(ownerId: string): string {
   const dir = join(userStateDir(ownerId), "codex-workspace");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { chmodSync(dir, 0o700); } catch { /* best effort */ }
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    /* best effort */
+  }
   return dir;
 }
 
@@ -60,15 +68,23 @@ function ensureCodexConfig(ownerId: string): string {
   const home = codexHomeForOwner(ownerId);
   const file = join(home, "config.toml");
   if (!existsSync(file)) {
-    writeFileSync(file, [
-      'cli_auth_credentials_store = "file"',
-      'forced_login_method = "chatgpt"',
-      'model_reasoning_effort = "low"',
-      'sandbox_mode = "read-only"',
-      '',
-    ].join("\n"), { mode: 0o600 });
+    writeFileSync(
+      file,
+      [
+        'cli_auth_credentials_store = "file"',
+        'forced_login_method = "chatgpt"',
+        'model_reasoning_effort = "low"',
+        'sandbox_mode = "read-only"',
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
   }
-  try { chmodSync(file, 0o600); } catch { /* best effort */ }
+  try {
+    chmodSync(file, 0o600);
+  } catch {
+    /* best effort */
+  }
   return file;
 }
 
@@ -119,12 +135,20 @@ function parseLines(buffer: { text: string }, chunk: any): any[] {
     const line = buffer.text.slice(0, idx).trim();
     buffer.text = buffer.text.slice(idx + 1);
     if (!line) continue;
-    try { messages.push(JSON.parse(line)); } catch { /* ignore non-json logs */ }
+    try {
+      messages.push(JSON.parse(line));
+    } catch {
+      /* ignore non-json logs */
+    }
   }
   return messages;
 }
 
-function spawnCodexAppServer(ownerId: string): { proc: any; send: (message: unknown) => void; waitForId: (id: number, ms: number) => Promise<any> } {
+function spawnCodexAppServer(ownerId: string): {
+  proc: any;
+  send: (message: unknown) => void;
+  waitForId: (id: number, ms: number) => Promise<any>;
+} {
   ensureCodexConfig(ownerId);
   const { spawn } = require("node:child_process");
   const proc = spawn(codexBin(), ["app-server"], {
@@ -140,17 +164,19 @@ function spawnCodexAppServer(ownerId: string): { proc: any; send: (message: unkn
     proc.stdin.write(`${JSON.stringify(message)}\n`);
   };
 
-  const waitForId = (id: number, ms: number) => new Promise<any>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      callbacks.delete(id);
-      reject(new Error(`Codex app-server request ${id} timed out${stderr ? `: ${stderr.slice(-300)}` : ""}`));
-    }, ms);
-    callbacks.set(id, { resolve, reject, timer });
-  });
+  const waitForId = (id: number, ms: number) =>
+    new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        callbacks.delete(id);
+        reject(new Error(`Codex app-server request ${id} timed out${stderr ? `: ${stderr.slice(-300)}` : ""}`));
+      }, ms);
+      callbacks.set(id, { resolve, reject, timer });
+    });
 
   proc.stdout.on("data", (chunk: any) => {
     for (const msg of parseLines(buffer, chunk)) {
       if (msg && typeof msg.id === "number" && callbacks.has(msg.id)) {
+        // biome-ignore lint/style/noNonNullAssertion: guarded by callbacks.has(msg.id) on the line above; the suggested `?.` would skip the timer cleanup and leak the pending callback
         const cb = callbacks.get(msg.id)!;
         callbacks.delete(msg.id);
         clearTimeout(cb.timer);
@@ -164,20 +190,39 @@ function spawnCodexAppServer(ownerId: string): { proc: any; send: (message: unkn
         if (pending && (!pending.loginId || pending.loginId === msg.params?.loginId)) {
           pending.done = true;
           pendingLogins.delete(owner);
-          try { chmodSync(codexAuthFile(owner), 0o600); } catch { /* best effort */ }
-          pending.onComplete?.({ success: !!msg.params?.success, error: msg.params?.error ? String(msg.params.error) : undefined });
-          try { pending.proc.stdin.end(); } catch { /* ignore */ }
-          try { pending.proc.kill(); } catch { /* ignore */ }
+          try {
+            chmodSync(codexAuthFile(owner), 0o600);
+          } catch {
+            /* best effort */
+          }
+          pending.onComplete?.({
+            success: !!msg.params?.success,
+            error: msg.params?.error ? String(msg.params.error) : undefined,
+          });
+          try {
+            pending.proc.stdin.end();
+          } catch {
+            /* ignore */
+          }
+          try {
+            pending.proc.kill();
+          } catch {
+            /* ignore */
+          }
         }
       }
     }
   });
 
-  proc.stderr.on("data", (chunk: any) => { stderr += String(chunk); });
+  proc.stderr.on("data", (chunk: any) => {
+    stderr += String(chunk);
+  });
   proc.on("exit", () => {
     for (const [id, cb] of callbacks) {
       clearTimeout(cb.timer);
-      cb.reject(new Error(`Codex app-server exited before request ${id} completed${stderr ? `: ${stderr.slice(-300)}` : ""}`));
+      cb.reject(
+        new Error(`Codex app-server exited before request ${id} completed${stderr ? `: ${stderr.slice(-300)}` : ""}`),
+      );
     }
     callbacks.clear();
   });
@@ -185,46 +230,75 @@ function spawnCodexAppServer(ownerId: string): { proc: any; send: (message: unkn
   return { proc, send, waitForId };
 }
 
-export async function startCodexOAuthLogin(ownerId: string, onComplete?: (result: { success: boolean; error?: string }) => void): Promise<CodexLoginStart> {
+export async function startCodexOAuthLogin(
+  ownerId: string,
+  onComplete?: (result: { success: boolean; error?: string }) => void,
+): Promise<CodexLoginStart> {
   const owner = String(ownerId || "").trim();
   if (!owner) throw new Error("ownerId is required for Codex OAuth");
-  if (pendingLogins.has(owner)) throw new Error("Codex OAuth login is already pending for this Telegram user. Use /codexcancel first if needed.");
+  if (pendingLogins.has(owner))
+    throw new Error("Codex OAuth login is already pending for this Telegram user. Use /codexcancel first if needed.");
 
   const app = spawnCodexAppServer(owner);
-  const initializeId = nextRpcId++;
-  app.send({ method: "initialize", id: initializeId, params: { clientInfo: { name: "quote_trade_telegram_bot", title: "Quote.Trade Telegram Bot", version: "1.0.0" } } });
-  await app.waitForId(initializeId, timeoutMs("CODEX_LOGIN_START_TIMEOUT_MS", 30_000));
-  app.send({ method: "initialized", params: {} });
 
+  // Registered before the first RPC, so the child is reachable from the moment it
+  // exists: /codexcancel can find it, and the catch below can always clean it up.
+  // Previously the initialize await below sat outside this try and before this
+  // line, so an initialize timeout threw with the process still running and no
+  // handle to it anywhere -- one leaked codex per failed attempt.
   pendingLogins.set(owner, { ownerId: owner, proc: app.proc, send: app.send, done: false, onComplete });
 
-  const loginId = nextRpcId++;
   try {
+    const initializeId = nextRpcId++;
+    app.send({
+      method: "initialize",
+      id: initializeId,
+      params: { clientInfo: { name: "quote_trade_telegram_bot", title: "Quote.Trade Telegram Bot", version: "1.0.0" } },
+    });
+    await app.waitForId(initializeId, timeoutMs("CODEX_LOGIN_START_TIMEOUT_MS", 30_000));
+    app.send({ method: "initialized", params: {} });
+
+    const loginId = nextRpcId++;
     app.send({ method: "account/login/start", id: loginId, params: { type: "chatgptDeviceCode" } });
     const result = await app.waitForId(loginId, timeoutMs("CODEX_LOGIN_START_TIMEOUT_MS", 30_000));
 
+    // No cleanup here: the catch below already deletes the pending entry and kills
+    // the child, so doing it twice only risked a double kill.
     if (result?.type !== "chatgptDeviceCode" || !result.verificationUrl || !result.userCode || !result.loginId) {
-      pendingLogins.delete(owner);
-      try { app.proc.kill(); } catch { /* ignore */ }
       throw new Error("Codex did not return a device-code OAuth challenge");
     }
 
     const pending = pendingLogins.get(owner);
     if (pending) pending.loginId = String(result.loginId);
 
-    const killTimer: any = setTimeout(() => {
-    const pending = pendingLogins.get(owner);
-    if (!pending || pending.done) return;
-    pendingLogins.delete(owner);
-    try { pending.proc.kill(); } catch { /* ignore */ }
-    pending.onComplete?.({ success: false, error: "Codex OAuth login timed out" });
-    }, timeoutMs("CODEX_LOGIN_TIMEOUT_MS", 10 * 60_000));
+    const killTimer: any = setTimeout(
+      () => {
+        const pending = pendingLogins.get(owner);
+        if (!pending || pending.done) return;
+        pendingLogins.delete(owner);
+        try {
+          pending.proc.kill();
+        } catch {
+          /* ignore */
+        }
+        pending.onComplete?.({ success: false, error: "Codex OAuth login timed out" });
+      },
+      timeoutMs("CODEX_LOGIN_TIMEOUT_MS", 10 * 60_000),
+    );
     killTimer.unref?.();
 
-    return { loginId: String(result.loginId), verificationUrl: String(result.verificationUrl), userCode: String(result.userCode) };
+    return {
+      loginId: String(result.loginId),
+      verificationUrl: String(result.verificationUrl),
+      userCode: String(result.userCode),
+    };
   } catch (error) {
     pendingLogins.delete(owner);
-    try { app.proc.kill(); } catch { /* ignore */ }
+    try {
+      app.proc.kill();
+    } catch {
+      /* ignore */
+    }
     throw error;
   }
 }
@@ -235,9 +309,17 @@ export function cancelCodexOAuthLogin(ownerId: string): boolean {
   if (!pending) return false;
   pendingLogins.delete(owner);
   if (pending.loginId) {
-    try { pending.send({ method: "account/login/cancel", id: nextRpcId++, params: { loginId: pending.loginId } }); } catch { /* ignore */ }
+    try {
+      pending.send({ method: "account/login/cancel", id: nextRpcId++, params: { loginId: pending.loginId } });
+    } catch {
+      /* ignore */
+    }
   }
-  try { pending.proc.kill(); } catch { /* ignore */ }
+  try {
+    pending.proc.kill();
+  } catch {
+    /* ignore */
+  }
   return true;
 }
 
@@ -245,7 +327,11 @@ export function logoutCodexOAuth(ownerId: string): boolean {
   cancelCodexOAuthLogin(ownerId);
   const file = codexAuthFile(ownerId);
   if (!existsSync(file)) return false;
-  try { unlinkSync(file); } catch { return false; }
+  try {
+    unlinkSync(file);
+  } catch {
+    return false;
+  }
   return true;
 }
 
@@ -263,8 +349,13 @@ const CODEX_PLAN_RESPONSE_SCHEMA = {
 function parseCodexJson(raw: string): RawLlmPlan {
   const text = String(raw || "").trim();
   if (!text) throw new Error("Codex returned an empty plan");
-  const clean = text.replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
-  try { return JSON.parse(clean); } catch {
+  const clean = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  try {
+    return JSON.parse(clean);
+  } catch {
     const start = clean.indexOf("{");
     const end = clean.lastIndexOf("}");
     if (start >= 0 && end > start) return JSON.parse(clean.slice(start, end + 1));
@@ -272,15 +363,23 @@ function parseCodexJson(raw: string): RawLlmPlan {
   }
 }
 
-export async function completeCodexOAuthPlan(ownerId: string, model: string, request: { systemPrompt: string; userPrompt: string }): Promise<RawLlmPlan> {
+export async function completeCodexOAuthPlan(
+  ownerId: string,
+  model: string,
+  request: { systemPrompt: string; userPrompt: string },
+): Promise<RawLlmPlan> {
   const owner = String(ownerId || "").trim();
-  if (!hasCodexOAuthSession(owner)) throw new Error("Codex OAuth is not connected for this Telegram user. Use /codexconnect in a private chat first.");
+  if (!hasCodexOAuthSession(owner))
+    throw new Error("Codex OAuth is not connected for this Telegram user. Use /codexconnect in a private chat first.");
   ensureCodexConfig(owner);
 
   const home = codexHomeForOwner(owner);
   const workspace = codexWorkspace(owner);
   const schemaPath = join(home, "quote-trade-plan.schema.json");
-  const outputPath = join(home, `quote-trade-plan-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const outputPath = join(
+    home,
+    `quote-trade-plan-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
+  );
   writeFileSync(schemaPath, JSON.stringify(CODEX_PLAN_RESPONSE_SCHEMA), { mode: 0o600 });
 
   const prompt = [
@@ -295,11 +394,15 @@ export async function completeCodexOAuthPlan(ownerId: string, model: string, req
     "exec",
     "--ephemeral",
     "--ignore-rules",
-    "--sandbox", "read-only",
+    "--sandbox",
+    "read-only",
     "--skip-git-repo-check",
-    "--cd", workspace,
-    "--output-schema", schemaPath,
-    "--output-last-message", outputPath,
+    "--cd",
+    workspace,
+    "--output-schema",
+    schemaPath,
+    "--output-last-message",
+    outputPath,
   ];
   if (model && model !== "default") args.push("--model", model);
   args.push("-");
@@ -308,22 +411,43 @@ export async function completeCodexOAuthPlan(ownerId: string, model: string, req
   const proc = spawn(codexBin(), args, { stdio: ["pipe", "pipe", "pipe"], env: safeEnv(owner) });
   let stdout = "";
   let stderr = "";
-  proc.stdout.on("data", (chunk: any) => { stdout += String(chunk); });
-  proc.stderr.on("data", (chunk: any) => { stderr += String(chunk); });
+  proc.stdout.on("data", (chunk: any) => {
+    stdout += String(chunk);
+  });
+  proc.stderr.on("data", (chunk: any) => {
+    stderr += String(chunk);
+  });
   proc.stdin.write(prompt);
   proc.stdin.end();
 
   const code = await new Promise<number>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      try { proc.kill(); } catch { /* ignore */ }
-      reject(new Error("Codex strategy planning timed out"));
-    }, timeoutMs("CODEX_EXEC_TIMEOUT_MS", 120_000));
-    proc.on("exit", (exitCode: number) => { clearTimeout(timer); resolve(exitCode ?? 0); });
-    proc.on("error", (error: any) => { clearTimeout(timer); reject(error); });
+    const timer = setTimeout(
+      () => {
+        try {
+          proc.kill();
+        } catch {
+          /* ignore */
+        }
+        reject(new Error("Codex strategy planning timed out"));
+      },
+      timeoutMs("CODEX_EXEC_TIMEOUT_MS", 120_000),
+    );
+    proc.on("exit", (exitCode: number) => {
+      clearTimeout(timer);
+      resolve(exitCode ?? 0);
+    });
+    proc.on("error", (error: any) => {
+      clearTimeout(timer);
+      reject(error);
+    });
   });
 
   if (code !== 0) throw new Error(`Codex strategy planning failed${stderr ? `: ${stderr.slice(-500)}` : ""}`);
   const output = existsSync(outputPath) ? readFileSync(outputPath, "utf8") : stdout;
-  try { unlinkSync(outputPath); } catch { /* ignore */ }
+  try {
+    unlinkSync(outputPath);
+  } catch {
+    /* ignore */
+  }
   return parseCodexJson(output);
 }

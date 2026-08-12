@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  # Merges (and any direct push) landing on main. Pull requests deliberately do
+  # not trigger a run.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build & test (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Report every failing Node version, not just the first.
+      fail-fast: false
+      matrix:
+        # 22.x and 24.x are the maintenance and active LTS lines; 26.x is the
+        # current line, included so a breaking change lands here before it
+        # becomes LTS rather than after. package.json requires >=22.
+        node-version: ['22.x', '24.x', '26.x']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # No `cache: npm`: this repo ships no lockfile, and setup-node's npm cache
+      # fails the job outright when it cannot find one.
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # `npm ci` requires a lockfile, which this repo deliberately does not
+      # publish, so dependencies resolve from the package.json ranges exactly
+      # as they do for someone cloning the repo.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # `npm test` also builds, but compiling in its own step means a type
+      # error is reported as a build failure rather than a test failure.
+      - name: Build
+        run: npm run build
+
+      # Runs the node:test suite under the coverage thresholds pinned in
+      # package.json, so a coverage regression fails the job too.
+      - name: Test
+        run: npm test

@@ -69,13 +69,15 @@ export class BotService {
       side: toQuoteTradeSide(req.side),
       type: req.type,
       quantity,
-      disableLeverage: req.disableLeverage,
+      disableLeverage: req.disableLeverage === undefined ? undefined : req.disableLeverage ? 1 : 0,
       paymentCurrency: req.paymentCurrency ?? process.env.DEFAULT_PAYMENT_CURRENCY ?? "USD",
       timestamp: Date.now(),
       stake: 0,
       stakeOption: 0,
     };
     if (req.type === "LIMIT" && req.price !== undefined) formattedReq.price = req.price;
+    if (req.clientOrderId !== undefined) formattedReq.clientOrderId = req.clientOrderId;
+    if (req.reduceOnly !== undefined) formattedReq.reduceOnly = req.reduceOnly;
 
     if ((process.env.MODE ?? "paper").toLowerCase() !== "real") {
       console.log(`[PAPER][owner=${ownerId}] would submit ${JSON.stringify(formattedReq)}`);
@@ -95,11 +97,28 @@ export class BotService {
     }
 
     const resp = await this.http.post("/order", formattedReq, this.quoteTradeConfig(ownerId, session));
+    if (
+      Number(resp?.code) < 0 ||
+      resp?.error ||
+      resp?.success === false ||
+      String(resp?.status ?? "").toUpperCase() === "REJECTED"
+    ) {
+      throw new Error(
+        `Quote.Trade rejected the order: ${resp?.msg ?? resp?.error ?? resp?.rejectReason ?? resp?.message ?? resp?.status}`,
+      );
+    }
     return {
       orderId: resp?.orderId ? String(resp.orderId) : undefined,
       clientOrderId: resp?.clientOrderId ? String(resp.clientOrderId) : req.clientOrderId,
       raw: resp,
     };
+  }
+
+  async refreshAccount(ownerId = this.ownerId): Promise<any> {
+    const config = this.sessions ? this.quoteTradeConfig(ownerId) : {};
+    const account = await this.http.get("/account", config);
+    if (this.sessions) this.sessions.touchVerified(ownerId);
+    return account;
   }
 
   async refreshPositions(ownerId = this.ownerId): Promise<number> {

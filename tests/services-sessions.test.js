@@ -660,7 +660,7 @@ describe("BotService payload shape", () => {
   it("forwards the leverage opt-out the caller asked for", async () => {
     const { service } = makeService();
     const { raw } = await service.submitOrder(limitOrder({ disableLeverage: true }));
-    assert.equal(raw.disableLeverage, true);
+    assert.equal(raw.disableLeverage, 1);
   });
 });
 
@@ -763,15 +763,15 @@ describe("BotService real mode", () => {
     });
   });
 
-  it("surfaces a rejection body with no order id and the caller own client order id", async () => {
+  it("rejects an application rejection body even when HTTP succeeds", async () => {
     await withEnv({ MODE: "real" }, async () => {
       resetHttp();
       postResponder = async () => ({ data: { code: -1013, msg: "Filter failure: MIN_NOTIONAL" } });
       const { service } = makeService(sessions, "trader");
-      const result = await service.submitOrder(limitOrder({ clientOrderId: "local-9" }));
-      assert.equal(result.orderId, undefined);
-      assert.equal(result.clientOrderId, "local-9");
-      assert.deepEqual(result.raw, { code: -1013, msg: "Filter failure: MIN_NOTIONAL" });
+      await assert.rejects(
+        service.submitOrder(limitOrder({ clientOrderId: "local-9" })),
+        /Filter failure: MIN_NOTIONAL/,
+      );
     });
   });
 

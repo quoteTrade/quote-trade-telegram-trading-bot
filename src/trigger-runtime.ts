@@ -9,6 +9,7 @@ export class TriggerRuntime {
   private stops = new Map<string, () => void>();
   private userDataStarted = false;
   private userDataListenersAttached = false;
+  private marketAccountWatcher = false;
   private timer?: NodeJS.Timeout;
 
   constructor(
@@ -56,7 +57,7 @@ export class TriggerRuntime {
   }
 
   private reconcileUserData(): void {
-    const shouldRun = this.triggers.needsAccountData();
+    const shouldRun = this.marketAccountWatcher || this.triggers.needsAccountData();
     if (shouldRun && !this.userDataStarted) {
       this.userDataStarted = this.userDataStream.start();
     } else if (!shouldRun && this.userDataStarted) {
@@ -66,7 +67,7 @@ export class TriggerRuntime {
   }
 
   private stopIfIdle(): void {
-    if (!this.triggers.runtimeNeeded()) this.stop();
+    if (!this.triggers.runtimeNeeded() && !this.marketAccountWatcher) this.stop();
   }
 
   reconcileSymbols(): void {
@@ -96,6 +97,7 @@ export class TriggerRuntime {
           mark: q.mark,
           ts: q.ts,
           orderBook: q.orderBook,
+          depthQuantityMode: q.depthQuantityMode,
         });
       },
       this.priceFeedMinIntervalMs(),
@@ -110,6 +112,7 @@ export class TriggerRuntime {
   }
 
   stop(): void {
+    this.marketAccountWatcher = false;
     for (const stop of this.stops.values()) stop();
     this.stops.clear();
     if (this.timer) clearInterval(this.timer);
@@ -126,5 +129,15 @@ export class TriggerRuntime {
     }
 
     return this.userDataStarted;
+  }
+
+  async prepareAccountWatcher(): Promise<void> {
+    // Market orders have no local trigger to keep their private fill stream
+    // alive. Retain it across position reconciliation until explicit stop.
+    if (!this.startAccountWatcher()) {
+      throw new Error("Account fill tracking could not start. Check the account stream configuration and try again.");
+    }
+    this.marketAccountWatcher = true;
+    await this.userDataStream.waitUntilReady();
   }
 }

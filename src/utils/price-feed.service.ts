@@ -10,6 +10,7 @@ export interface PriceQuote {
   askQty?: number;
   mark?: number;
   orderBook?: any;
+  depthQuantityMode?: "cumulative" | "per-level";
   ts: number;
 }
 
@@ -162,6 +163,7 @@ function quoteFromBook(symbol: string, msg: any): PriceQuote | undefined {
     bidQty,
     askQty,
     orderBook: book,
+    depthQuantityMode: "cumulative",
     ts: Date.now(),
   };
 }
@@ -468,6 +470,9 @@ export class PriceFeedService {
       });
     }
 
+    // The liquidity websocket currently stops sending updates for remaining
+    // symbols after any symbol is unsubscribed. Re-assert the still-active
+    // subscriptions so triggers depending on them keep receiving market data.
     this.resubscribeRemainingActiveSymbols("after-unsubscribe", symbol);
   }
 

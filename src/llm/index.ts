@@ -1914,6 +1914,9 @@ function systemPrompt(format: PlanCommandFormat): string {
     "Do not guess missing size.",
     "Do not use last, mid, mark, or --source.",
     "The bot always uses side-specific streaming L2 depth: BUY checks executable ask depth for the requested quantity; SELL checks executable bid depth for the requested quantity.",
+    "Quote.Trade REST depth quantities and public liquidity WebSocket q values are cumulative base quantities, not per-level sizes. Select the first valid level whose cumulative quantity covers the requested size; never sum cumulative levels. If no level covers the size, there is insufficient quoted depth.",
+    "A REST order acknowledgement is not a final fill: the authenticated WebSocket continues to send fill and status updates after the REST response. Reconcile by order ID and client order ID; private order o.z is cumulative filled quantity, o.l is last filled quantity, and o.q is original quantity.",
+    "Order and execution response codes are designed to match FIX semantics: private WebSocket o.X is order status and o.x is execution type, while REST status may use names such as NEW or FILLED. HTTP statuses and application error codes are separate.",
     "If the request is ambiguous, return commands: [] and explain in riskNotes.",
   ].join(" ");
 }

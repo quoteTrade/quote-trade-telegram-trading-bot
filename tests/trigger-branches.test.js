@@ -1776,6 +1776,58 @@ describe("Engine ticks that do nothing", () => {
   });
 });
 
+describe("Engine store invariants", () => {
+  it("fails explicitly when an active trigger disappears before tick processing", async () => {
+    const { store, engine } = rig();
+    const trigger = store.add({ kind: "LIMIT", symbol: "BTC", side: "BUY", triggerPrice: 100, quantity: 1 });
+    const originalGet = store.get.bind(store);
+    store.get = (id) => (id === trigger.id ? undefined : originalGet(id));
+
+    await assert.rejects(
+      () => engine.processTick(l2("BTC", 100)),
+      /Trigger .* disappeared from store during tick processing/,
+    );
+  });
+
+  it("fails explicitly when a tick-state update cannot find the trigger", async () => {
+    const { store, engine } = rig();
+    const trigger = store.add({
+      kind: "TRAILING_STOP",
+      symbol: "BTC",
+      side: "SELL",
+      quantity: 1,
+      trailMode: "AMOUNT",
+      trailValue: 10,
+    });
+    const originalUpdate = store.update.bind(store);
+    store.update = (id, patch, options) => (id === trigger.id ? undefined : originalUpdate(id, patch, options));
+
+    await assert.rejects(
+      () => engine.processTick(l2("BTC", 100)),
+      /Trigger .* disappeared from store during trailing stop state update/,
+    );
+  });
+
+  it("rejects the trigger instead of submitting when it cannot be marked submitting", async () => {
+    const { store, executor, engine, events } = rig();
+    const trigger = store.add({ kind: "LIMIT", symbol: "BTC", side: "BUY", triggerPrice: 100, quantity: 1 });
+    const originalSetStatus = store.setStatus.bind(store);
+    store.setStatus = (id, status, patch) =>
+      id === trigger.id && status === "SUBMITTING" ? undefined : originalSetStatus(id, status, patch);
+
+    await engine.processTick(l2("BTC", 100));
+
+    assert.deepStrictEqual(executor.orders, [], "the order must not submit if the trigger status update failed");
+    assert.strictEqual(store.get(trigger.id).status, "REJECTED");
+    assert.deepStrictEqual(events.errors, [
+      {
+        id: trigger.id,
+        message: `Trigger ${trigger.id} disappeared from store during marking trigger as submitting`,
+      },
+    ]);
+  });
+});
+
 describe("Engine executor failures", () => {
   it("marks the trigger REJECTED and keeps working through the rest of the tick when the executor throws", async () => {
     const { store, executor, engine, events } = rig({}, new FlakyExecutor(1));

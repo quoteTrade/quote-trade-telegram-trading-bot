@@ -55,6 +55,11 @@ function roughlyEqual(a: number | undefined, b: number | undefined): boolean {
   return Math.abs(a - b) <= 1e-12;
 }
 
+function requireStoredTrigger(trigger: TriggerOrder | undefined, id: string, action: string): TriggerOrder {
+  if (trigger) return trigger;
+  throw new Error(`Trigger ${id} disappeared from store during ${action}`);
+}
+
 export class TriggerEngine {
   private firing = new Set<string>();
   private lastTicks = new Map<string, MarketTick>();
@@ -82,7 +87,7 @@ export class TriggerEngine {
     await this.processDueTimers(now);
 
     for (const baseTrigger of this.store.active(symbol)) {
-      const trigger = this.store.get(baseTrigger.id) ?? baseTrigger;
+      const trigger = requireStoredTrigger(this.store.get(baseTrigger.id), baseTrigger.id, "tick processing");
       if (trigger.status !== "ACTIVE" || isTimer(trigger)) continue;
 
       if (trigger.kind === "RISK_GUARD") {
@@ -174,8 +179,7 @@ export class TriggerEngine {
       if (!this.isRiskGuardBreached(guard)) continue;
       if (guard.riskAction === "CLOSE_POSITION") continue; // close orders wait for a depth-checked L2 tick
       await this.fire(guard, marketPrice);
-      const updated = this.store.get(guard.id);
-      if (updated) changed.push(updated);
+      changed.push(requireStoredTrigger(this.store.get(guard.id), guard.id, "risk guard position update"));
     }
 
     return changed;
@@ -312,16 +316,28 @@ export class TriggerEngine {
         dynamicPatch = { lowWaterMark, currentStopPrice: lowWaterMark + distance };
       }
       const moved = patchChanges(trigger, dynamicPatch);
-      return this.store.update(trigger.id, { ...dynamicPatch, lastCheckedPrice: price }, { persist: moved }) ?? trigger;
+      return requireStoredTrigger(
+        this.store.update(trigger.id, { ...dynamicPatch, lastCheckedPrice: price }, { persist: moved }),
+        trigger.id,
+        "trailing stop state update",
+      );
     }
 
     if (trigger.kind === "BREAK_EVEN_STOP") {
       const patch = this.breakEvenPatch(trigger, price);
       const changed = patchChanges(trigger, patch, new Set(["meta"]));
-      return this.store.update(trigger.id, { ...patch, lastCheckedPrice: price }, { persist: changed }) ?? trigger;
+      return requireStoredTrigger(
+        this.store.update(trigger.id, { ...patch, lastCheckedPrice: price }, { persist: changed }),
+        trigger.id,
+        "break-even stop state update",
+      );
     }
 
-    return this.store.update(trigger.id, { lastCheckedPrice: price }, { persist: false }) ?? trigger;
+    return requireStoredTrigger(
+      this.store.update(trigger.id, { lastCheckedPrice: price }, { persist: false }),
+      trigger.id,
+      "last checked price update",
+    );
   }
 
   private breakEvenPatch(trigger: TriggerOrder, price: number): Partial<TriggerOrder> {
@@ -329,9 +345,8 @@ export class TriggerEngine {
     const entry = position?.avgEntryPrice;
     if (!entry || entry <= 0) return {};
 
-    const closeSide = trigger.closePosition
-      ? (this.positions.getCloseSide(trigger.symbol) ?? trigger.side)
-      : trigger.side;
+    const closeSide = trigger.closePosition ? this.positions.getCloseSide(trigger.symbol) : trigger.side;
+    if (!closeSide) throw new Error(`Could not resolve close side for ${trigger.symbol} break-even trigger`);
     const activationDistance = distanceFromMode(entry, trigger.activationMode, trigger.activationValue);
     const lockDistance = distanceFromMode(entry, trigger.lockMode, trigger.lockValue ?? 0);
     const activationPrice = closeSide === "SELL" ? entry + activationDistance : entry - activationDistance;
@@ -365,7 +380,7 @@ export class TriggerEngine {
 
   private async fire(trigger: TriggerOrder, marketPrice: number, precheckedIntent?: OrderIntent): Promise<void> {
     if (this.firing.has(trigger.id)) return;
-    let latest = this.store.get(trigger.id) ?? trigger;
+    let latest = requireStoredTrigger(this.store.get(trigger.id), trigger.id, "trigger firing");
     if (precheckedIntent) latest = { ...latest, side: precheckedIntent.side };
     if (latest.status !== "ACTIVE") return;
     this.firing.add(trigger.id);
@@ -405,7 +420,11 @@ export class TriggerEngine {
       }
 
       const submittedAt = Date.now();
-      this.store.setStatus(latest.id, "SUBMITTING", { firedAt: submittedAt, lastCheckedPrice: marketPrice });
+      latest = requireStoredTrigger(
+        this.store.setStatus(latest.id, "SUBMITTING", { firedAt: submittedAt, lastCheckedPrice: marketPrice }),
+        latest.id,
+        "marking trigger as submitting",
+      );
       const result = await this.executor.submitOrder(order);
 
       if (process.env.TRIGGER_DEBUG === "true") {
@@ -414,25 +433,32 @@ export class TriggerEngine {
           result,
         });
       }
-      const fired =
+      const fired = requireStoredTrigger(
         this.store.setStatus(latest.id, "TRIGGERED", {
           orderId: result.orderId,
           clientOrderId: result.clientOrderId,
           firedAt: submittedAt,
           lastCheckedPrice: marketPrice,
-        }) ?? latest;
+        }),
+        latest.id,
+        "marking trigger as triggered",
+      );
 
       const cancelled = this.store.cancelOcoSiblings(fired.ocoGroupId, fired.id);
       if (cancelled.length) this.options.onAction?.(fired, `Cancelled ${cancelled.length} OCO sibling trigger(s).`);
       this.options.onTrigger?.(fired, order);
     } catch (error: any) {
       const message = error?.message ?? String(error);
-      this.store.setStatus(latest.id, "REJECTED", {
-        error: message,
-        firedAt: Date.now(),
-        lastCheckedPrice: marketPrice,
-      });
-      this.options.onError?.(latest, error);
+      const rejected = requireStoredTrigger(
+        this.store.setStatus(latest.id, "REJECTED", {
+          error: message,
+          firedAt: Date.now(),
+          lastCheckedPrice: marketPrice,
+        }),
+        latest.id,
+        "marking trigger as rejected",
+      );
+      this.options.onError?.(rejected, error);
     } finally {
       this.firing.delete(trigger.id);
     }
@@ -441,14 +467,16 @@ export class TriggerEngine {
   private recordBracketEntrySubmission(trigger: TriggerOrder): TriggerOrder {
     if (!trigger.meta?.bracket || trigger.meta.bracketEntrySubmittedAt) return trigger;
     const netQtyBefore = this.positions.get(trigger.symbol)?.netQty ?? 0;
-    return (
+    return requireStoredTrigger(
       this.store.update(trigger.id, {
         meta: {
           ...(trigger.meta ?? {}),
           bracketEntrySubmittedAt: Date.now(),
           bracketEntryNetQtyBefore: netQtyBefore,
         },
-      }) ?? trigger
+      }),
+      trigger.id,
+      "recording bracket entry submission",
     );
   }
 
@@ -459,8 +487,12 @@ export class TriggerEngine {
       if (canceled) cancelled.push(canceled);
     }
     if (trigger.cancelGroupId) cancelled.push(...this.store.cancelGroup(trigger.cancelGroupId, trigger.id));
-    this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice });
-    this.options.onAction?.(trigger, `Timed cancellation fired; cancelled ${cancelled.length} trigger(s).`);
+    const fired = requireStoredTrigger(
+      this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice }),
+      trigger.id,
+      "marking timed cancellation as triggered",
+    );
+    this.options.onAction?.(fired, `Timed cancellation fired; cancelled ${cancelled.length} trigger(s).`);
   }
 
   private fireRiskGuardAction(trigger: TriggerOrder, marketPrice: number): void {
@@ -471,13 +503,21 @@ export class TriggerEngine {
         const canceled = this.store.cancel(open.id);
         if (canceled) cancelled.push(canceled);
       }
-      this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice });
-      this.options.onAction?.(trigger, `Risk guard fired; cancelled ${cancelled.length} trigger(s).`);
+      const fired = requireStoredTrigger(
+        this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice }),
+        trigger.id,
+        "marking risk guard as triggered",
+      );
+      this.options.onAction?.(fired, `Risk guard fired; cancelled ${cancelled.length} trigger(s).`);
       return;
     }
 
-    this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice });
-    this.options.onAction?.(trigger, `Risk guard fired for ${trigger.symbol}.`);
+    const fired = requireStoredTrigger(
+      this.store.setStatus(trigger.id, "TRIGGERED", { firedAt: Date.now(), lastCheckedPrice: marketPrice }),
+      trigger.id,
+      "marking risk guard as triggered",
+    );
+    this.options.onAction?.(fired, `Risk guard fired for ${trigger.symbol}.`);
   }
 
   private bracketEntryFillQuantity(parent: TriggerOrder): number {
@@ -534,8 +574,12 @@ export class TriggerEngine {
       groupId,
     );
 
-    this.store.update(parent.id, { meta: { ...(parent.meta ?? {}), bracketChildrenCreated: true } });
-    this.options.onAction?.(parent, `Bracket exits armed for ${parent.symbol} after position update.`);
+    const updatedParent = requireStoredTrigger(
+      this.store.update(parent.id, { meta: { ...(parent.meta ?? {}), bracketChildrenCreated: true } }),
+      parent.id,
+      "marking bracket exits as created",
+    );
+    this.options.onAction?.(updatedParent, `Bracket exits armed for ${parent.symbol} after position update.`);
     return children;
   }
 
@@ -544,11 +588,16 @@ export class TriggerEngine {
     for (const trigger of this.store.active(parent.symbol)) {
       if (!trigger.meta?.bracketExit || trigger.meta.parentTriggerId !== parent.id || trigger.closePosition) continue;
       if (roughlyEqual(trigger.quantity, filledQuantity)) continue;
-      const next = this.store.update(trigger.id, {
-        quantity: filledQuantity,
-        meta: { ...(trigger.meta ?? {}), bracketExitQuantity: filledQuantity },
-      });
-      if (next) changed.push(next);
+      changed.push(
+        requireStoredTrigger(
+          this.store.update(trigger.id, {
+            quantity: filledQuantity,
+            meta: { ...(trigger.meta ?? {}), bracketExitQuantity: filledQuantity },
+          }),
+          trigger.id,
+          "syncing bracket exit quantity",
+        ),
+      );
     }
     return changed;
   }

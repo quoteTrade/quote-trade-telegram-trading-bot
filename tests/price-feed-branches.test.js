@@ -952,6 +952,7 @@ class FakeUserDataStream extends EventEmitter {
   stop() {
     this.stops += 1;
   }
+  async waitUntilReady() {}
 }
 
 /** Price feed that hands back the callback so a case can push a quote by hand. */
@@ -1026,6 +1027,7 @@ describe("TriggerRuntime market data plumbing", () => {
       mark: 100.5,
       ts: 1700,
       orderBook: { bids: [] },
+      depthQuantityMode: "cumulative",
     });
 
     assert.deepStrictEqual(
@@ -1041,6 +1043,7 @@ describe("TriggerRuntime market data plumbing", () => {
           mark: 100.5,
           ts: 1700,
           orderBook: { bids: [] },
+          depthQuantityMode: "cumulative",
         },
       ],
       "the runtime must hand the full L2 quote to the engine",
@@ -1302,6 +1305,24 @@ describe("TriggerRuntime account stream listeners", () => {
 });
 
 describe("TriggerRuntime startAccountWatcher", () => {
+  it("retains a market-order watcher across idle reconciliation until explicit stop", async (t) => {
+    const rig = runtimeRig();
+    t.after(() => rig.runtime.stop());
+    await rig.runtime.prepareAccountWatcher();
+    assert.equal(rig.userData.starts, 1);
+    rig.runtime.reconcile();
+    assert.equal(rig.userData.stops, 0);
+    rig.runtime.stop();
+    assert.equal(rig.userData.stops, 1);
+  });
+
+  it("rejects market-order preparation when the account stream cannot start", async (t) => {
+    const rig = runtimeRig({ accountStreamStarts: false });
+    t.after(() => rig.runtime.stop());
+    await assert.rejects(rig.runtime.prepareAccountWatcher(), /fill tracking could not start/);
+    assert.equal(rig.userData.starts, 1);
+  });
+
   it("starts the account stream and reports it running", (t) => {
     const rig = runtimeRig();
     t.after(() => rig.runtime.stop());

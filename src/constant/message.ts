@@ -6,6 +6,7 @@ Per-user account sessions:
 /disconnect
 
 Trading commands:
+/market BTC BUY 0.01
 /limit BTC BUY 60000 0.01
 /stoplimit BTC SELL 58000 57950 0.01
 /takeprofit BTC SELL 65000 close
@@ -24,6 +25,7 @@ Trading commands:
 /canceltrigger <id>
 /positions
 /risk
+/buyingpower
 /filledorders [page]
 
 LLM strategy drafts:
@@ -87,10 +89,11 @@ export const ACCOUNT_CONNECTED_KEYBOARD = {
 
 export const TRADING_KEYBOARD = {
   inline_keyboard: [
+    [{ text: "🛒 Market Order", callback_data: "trade_select:market" }],
     [{ text: "➕ Create Trigger", callback_data: "trade_create_menu" }],
     [
       { text: "📈 Positions", callback_data: "monitor_positions" },
-      { text: "⚠️ Risk", callback_data: "monitor_risk" },
+      { text: "⚠️ Risk & Buying Power", callback_data: "monitor_risk" },
     ],
     [
       { text: "⚡ Active Triggers", callback_data: "monitor_triggers_active" },

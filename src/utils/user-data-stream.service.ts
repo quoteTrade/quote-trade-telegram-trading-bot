@@ -67,6 +67,7 @@ export interface UserDataStreamOptions {
 
 export class UserDataStreamService extends EventEmitter {
   private ws?: WebSocket;
+  private subscribedWs?: WebSocket;
   private reconnectTimer?: NodeJS.Timeout;
   private warnedMissingConfig = false;
   private stopped = false;
@@ -121,7 +122,17 @@ export class UserDataStreamService extends EventEmitter {
     this.ws = ws;
 
     ws.on("open", () => {
-      if (this.ws === ws) ws.send(JSON.stringify({ unsubscribe: 0, requestToken: token }));
+      if (this.ws !== ws) return;
+      ws.send(JSON.stringify({ unsubscribe: 0, requestToken: token }), (error?: Error) => {
+        if (this.ws !== ws || this.stopped) return;
+        if (error) {
+          this.emit("error", error);
+          return;
+        }
+        if (ws.readyState !== WebSocket.OPEN) return;
+        this.subscribedWs = ws;
+        this.emit("ready");
+      });
     });
 
     ws.on("message", (data: WebSocket.RawData) => {
@@ -131,6 +142,7 @@ export class UserDataStreamService extends EventEmitter {
           const update = mapOrderTrade(feed.o ?? feed);
           if (update) this.emit("orderUpdate", update);
         }
+        if (feed.e === "RISK_UPDATE") this.emit("riskUpdate", feed);
         if (feed.e === "ACCOUNT_UPDATE" || feed.a?.P || feed.a?.B || feed.positions) {
           for (const position of normalizePositionUpdate(feed)) this.emit("positionUpdate", position);
         }
@@ -140,7 +152,11 @@ export class UserDataStreamService extends EventEmitter {
     });
 
     ws.on("close", () => {
-      if (this.ws === ws) this.ws = undefined;
+      if (this.ws === ws) {
+        this.ws = undefined;
+        this.subscribedWs = undefined;
+        this.emit("disconnected");
+      }
       if (!this.stopped && !this.reconnectTimer) {
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = undefined;
@@ -153,8 +169,42 @@ export class UserDataStreamService extends EventEmitter {
     return true;
   }
 
+  /** Resolves after the authenticated subscription frame has been sent. */
+  waitUntilReady(timeoutMs = 5_000): Promise<void> {
+    if (this.ws?.readyState === WebSocket.OPEN && this.subscribedWs === this.ws) return Promise.resolve();
+    if (!isWsActive(this.ws)) return Promise.reject(new Error("Account stream is not running. Try again."));
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("ready", onReady);
+        this.off("error", onError);
+        this.off("disconnected", onDisconnected);
+        this.off("stopped", onDisconnected);
+      };
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: unknown) => {
+        cleanup();
+        reject(error);
+      };
+      const onDisconnected = () => onError(new Error("Account stream stopped before it was ready. Try again."));
+      const timer = setTimeout(
+        () => onError(new Error("Account stream readiness timed out. No market order was submitted. Try again.")),
+        timeoutMs,
+      );
+      this.once("ready", onReady);
+      this.once("error", onError);
+      this.once("disconnected", onDisconnected);
+      this.once("stopped", onDisconnected);
+    });
+  }
+
   stop(): void {
     this.stopped = true;
+    this.subscribedWs = undefined;
+    this.emit("stopped");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     const ws = this.ws;

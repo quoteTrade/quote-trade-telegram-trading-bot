@@ -11,7 +11,7 @@ const posts = [];
 
 /**
  * Stands in for `axios`. Records the outbound POST instead of reaching the
- * exchange, and answers with the response shape a filled order returns.
+ * exchange, and answers with an order acknowledgement (not proof of a fill).
  */
 const axiosStub = {
   get: async () => ({ data: {} }),
@@ -35,7 +35,7 @@ function makeService() {
 
 /**
  * An order as the trigger engine hands it over: exchange fields plus local-only
- * bookkeeping (`clientOrderId`, `triggerId`, `meta`, `reduceOnly`) that exists
+ * bookkeeping (`triggerId`, `meta`) that exists
  * only inside this process and must never be forwarded.
  */
 function triggerBackedOrder() {
@@ -73,6 +73,8 @@ function assertQuoteTradePayload(body, options = {}) {
     stake: 0,
     stakeOption: 0,
     price: 123,
+    reduceOnly: true,
+    clientOrderId: "local-client-id",
   };
   if (!options.withChannel) {
     expected.account = undefined;
@@ -94,7 +96,7 @@ function assertQuoteTradePayload(body, options = {}) {
  * Presence is checked with `in`, not by value, so an `undefined` leak fails too.
  */
 function assertLocalOnlyFieldsStripped(submitted, body) {
-  for (const field of ["triggerId", "meta", "reduceOnly", "clientOrderId"]) {
+  for (const field of ["triggerId", "meta"]) {
     assert.equal(field in submitted, true, `fixture must carry ${field} for the strip check to mean anything`);
     assert.equal(field in body, false);
   }
@@ -147,6 +149,23 @@ describe("submitOrder wire payload", () => {
   describe("real mode", () => {
     beforeEach(() => {
       process.env.MODE = "real";
+    });
+
+    it("posts MARKET without a limit price and with leverage disabled", async () => {
+      await makeService().submitOrder({
+        symbol: "BTC",
+        side: "BUY",
+        type: "MARKET",
+        quantity: 0.01,
+        disableLeverage: 1,
+        paymentCurrency: "USD",
+      });
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].url, "/order");
+      assert.equal(posts[0].body.type, "MARKET");
+      assert.equal(posts[0].body.quantity, 0.01);
+      assert.equal(posts[0].body.disableLeverage, 1);
+      assert.equal("price" in posts[0].body, false);
     });
 
     it("posts the order exactly once, to /order", async () => {

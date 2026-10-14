@@ -3,6 +3,7 @@ import TelegramBot from "./utils/telegram-bot";
 
 dotenv.config();
 
+import { AccountRiskStore } from "./account-risk";
 import { BotService } from "./bot.service";
 import { asNumber, escapeLong, parseWords } from "./bot.utils";
 import {
@@ -30,6 +31,7 @@ import {
   redactedSecret,
 } from "./llm";
 import { cancelCodexOAuthLogin, codexOAuthStatus, logoutCodexOAuth, startCodexOAuthLogin } from "./llm/codex-oauth";
+import { MarketOrderFlow, marketSessionIdentity } from "./market-orders";
 import { detectSigningAlgorithm, redacted, TradingSessionStore } from "./sessions/trading-session-store";
 import { userStateFile } from "./sessions/user-state";
 import { TriggerRuntime } from "./trigger-runtime";
@@ -75,6 +77,7 @@ interface ConnectWizardState {
 }
 
 type TradingCommandName =
+  | "market"
   | "limit"
   | "stoplimit"
   | "takeprofit"
@@ -110,6 +113,7 @@ interface LlmUiWizardState {
 interface UserScope {
   ownerId: string;
   positions: PositionStore;
+  accountRisk: AccountRiskStore;
   triggers: TriggerStore;
   llmConfig: LlmConfigStore;
   llmDrafts: LlmDraftStore;
@@ -123,6 +127,12 @@ const sessions = new TradingSessionStore();
 const scopes = new Map<string, UserScope>();
 const connectWizards = new Map<string, ConnectWizardState>();
 const tradingWizards = new Map<string, TradingWizardState>();
+const marketOrders = new MarketOrderFlow({
+  sessionIdentity: (ownerId) => marketSessionIdentity(sessions, ownerId),
+  getScope,
+  isRealMode: () => (process.env.MODE ?? "paper").toLowerCase() === "real",
+  paymentCurrency: () => process.env.DEFAULT_PAYMENT_CURRENCY ?? "USD",
+});
 const codexModelWizards = new Map<string, CodexModelWizardState>();
 const llmUiWizards = new Map<string, LlmUiWizardState>();
 const CONNECT_WIZARD_TTL_MS = 5 * 60 * 1000;
@@ -131,6 +141,7 @@ const CODEX_MODEL_WIZARD_TTL_MS = 5 * 60 * 1000;
 const LLM_UI_WIZARD_TTL_MS = 10 * 60 * 1000;
 
 const TRADING_COMMAND_HELP: Record<TradingCommandName, { title: string; parameters: string; example: string }> = {
+  market: { title: "Market Order", parameters: "SYMBOL SIDE QUANTITY", example: "BTC BUY 0.01" },
   limit: { title: "Limit", parameters: "SYMBOL SIDE PRICE SIZE", example: "BTC BUY 60000 0.01" },
   stoplimit: { title: "Stop Limit", parameters: "SYMBOL SIDE STOP LIMIT SIZE", example: "BTC SELL 58000 57950 0.01" },
   takeprofit: {
@@ -197,11 +208,13 @@ function getScope(ownerId: string): UserScope {
 
   const orderHistory = new OrderHistoryStore();
   const positions = new PositionStore(userStateFile(owner, "positions.json"));
+  const accountRisk = new AccountRiskStore();
   const triggers = new TriggerStore(userStateFile(owner, "triggers.json"));
   const llmConfig = new LlmConfigStore(userStateFile(owner, "llm-config.json"));
   const llmDrafts = new LlmDraftStore(userStateFile(owner, "llm-drafts.json"));
   const service = new BotService(positions, sessions, owner);
   const userData = new UserDataStreamService({ ownerId: owner, requestToken: () => sessions.get(owner)?.apiKey });
+  userData.on("riskUpdate", (update: unknown) => accountRisk.updateRisk(update));
   const engine = new TriggerEngine(triggers, positions, service, {
     onTrigger: (t, o) =>
       void notifyOwner(
@@ -223,7 +236,18 @@ function getScope(ownerId: string): UserScope {
     orderHistory,
   );
 
-  const scope = { ownerId: owner, positions, triggers, llmConfig, llmDrafts, orderHistory, service, engine, runtime };
+  const scope = {
+    ownerId: owner,
+    positions,
+    accountRisk,
+    triggers,
+    llmConfig,
+    llmDrafts,
+    orderHistory,
+    service,
+    engine,
+    runtime,
+  };
   // const scope = { ownerId: owner, positions, triggers, llmConfig, llmDrafts, service, engine, runtime };
   scopes.set(owner, scope);
   return scope;
@@ -558,6 +582,7 @@ function connectTradingSession(
   }
 
   scopes.get(ctx.ownerId)?.runtime.stop();
+  marketOrders.invalidate(ctx.ownerId);
   // A new account must never inherit cached positions from the previous keys.
   clearUserPositions(ctx.ownerId);
   scopes.delete(ctx.ownerId);
@@ -569,6 +594,7 @@ function connectTradingSession(
 function disconnectTradingSession(ownerId: string): string {
   connectWizards.delete(ownerId);
   tradingWizards.delete(ownerId);
+  marketOrders.invalidate(ownerId);
   scopes.get(ownerId)?.runtime.stop();
   clearUserPositions(ownerId);
   scopes.delete(ownerId);
@@ -879,7 +905,7 @@ function filledOrdersKeyboard(page: number, totalPages: number): any {
 
   void Promise.resolve()
     .then(async () => {
-      if (data.startsWith("trade_select:") && chatType !== "private") {
+      if ((data.startsWith("trade_select:") || data.startsWith("trade_market_")) && chatType !== "private") {
         acknowledgeCallback(query.id, {
           text: "Create trading triggers in a private chat with the bot.",
           show_alert: true,
@@ -915,9 +941,31 @@ function filledOrdersKeyboard(page: number, totalPages: number): any {
         return;
       }
 
+      if (data === "trade_market_cancel" || data.startsWith("trade_market_cancel:")) {
+        marketOrders.cancel({ ownerId, chatId, chatType }, data.slice("trade_market_cancel:".length));
+        await sendWithOptions(chatId, "Market order cancelled.", { reply_markup: TRADING_KEYBOARD });
+        return;
+      }
+
+      if (data === "trade_market_confirm" || data.startsWith("trade_market_confirm:")) {
+        const { symbol, side, quantity, result } = await marketOrders.confirm(
+          { ownerId, chatId, chatType },
+          data.slice("trade_market_confirm:".length),
+        );
+        await sendWithOptions(
+          chatId,
+          `${result.paper ? "Paper" : "Submitted"} MARKET ${side} ${symbol} qty=${quantity}${result.orderId ? ` orderId=${result.orderId}` : ""}. Check /filledorders and /positions for the actual fill.`,
+          { reply_markup: TRADING_KEYBOARD },
+        );
+        return;
+      }
+
       if (data === "trade_cancel") {
+        const isMarket = tradingWizards.get(ownerId)?.command === "market";
         tradingWizards.delete(ownerId);
-        await sendWithOptions(chatId, "Trigger creation cancelled.", { reply_markup: TRIGGER_CREATE_KEYBOARD });
+        await sendWithOptions(chatId, isMarket ? "Market order cancelled." : "Trigger creation cancelled.", {
+          reply_markup: isMarket ? TRADING_KEYBOARD : TRIGGER_CREATE_KEYBOARD,
+        });
         return;
       }
 
@@ -983,6 +1031,13 @@ async function handleTradingWizardMessage(msg: any, ownerId: string, state: Trad
 
   assertFreshMessage(msg);
   if (!parameters) throw new Error("Trading parameters cannot be empty");
+  if (state.command === "market") {
+    tradingWizards.delete(ownerId);
+    const ctx: CommandContext = { chatId, ownerId, chatType: msg?.chat?.type, msg };
+    const preview = marketPreview(ctx, parseWords(parameters));
+    await sendWithOptions(chatId, preview.text, preview.options);
+    return;
+  }
   tradingWizards.set(ownerId, { ...state, parameters, step: "confirm" });
   await sendWithOptions(
     chatId,
@@ -999,6 +1054,16 @@ async function handleTradingWizardMessage(msg: any, ownerId: string, state: Trad
     },
   );
 }
+
+function marketPreview(ctx: CommandContext, words: string[]): CommandReply {
+  assertConnected(ctx.ownerId);
+  return marketOrders.preview(ctx, words);
+}
+
+bot.onText(
+  /^\/market\b.*/i,
+  command(async (ctx, words) => marketPreview(ctx, words)),
+);
 
 bot.onText(
   /^\/limit\b.*/i,
@@ -1478,9 +1543,30 @@ async function positionsText(ctx: CommandContext): Promise<string> {
 }
 
 async function riskText(ctx: CommandContext): Promise<string> {
+  if (ctx.chatType !== "private")
+    throw new Error("Account risk and buying power are only available in a private chat with the bot.");
   const scope = getScope(ctx.ownerId);
-  await refreshUserPositionsForCommand(ctx, scope, "RISK");
-  return formatRisk(scope.positions);
+  sessions.require(ctx.ownerId);
+  scope.runtime.startAccountWatcher();
+  const results = await Promise.allSettled([
+    scope.service.refreshAccount(ctx.ownerId),
+    refreshUserPositionsForCommand(ctx, scope, "RISK"),
+  ]);
+  let accountError: string | undefined;
+  if (results[0].status === "fulfilled") {
+    try {
+      scope.accountRisk.updateAccount(results[0].value);
+    } catch (error: any) {
+      accountError = `Account refresh failed: ${error?.message ?? error}`;
+    }
+  }
+  const notes = results.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [`${index === 0 ? "Account" : "Positions"} refresh failed: ${result.reason?.message ?? result.reason}`]
+      : [],
+  );
+  if (accountError) notes.push(accountError);
+  return `${scope.accountRisk.format(scope.positions)}${notes.length ? `\n${notes.join("\n")}` : ""}`;
 }
 
 function filledOrdersPage(ctx: CommandContext, page: number): { text: string; page: number; totalPages: number } {
@@ -1512,6 +1598,10 @@ bot.onText(
 
 bot.onText(
   /^\/risk\b/i,
+  command(async (ctx) => riskText(ctx)),
+);
+bot.onText(
+  /^\/buyingpower\b/i,
   command(async (ctx) => riskText(ctx)),
 );
 

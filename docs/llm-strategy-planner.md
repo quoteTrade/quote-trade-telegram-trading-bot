@@ -9,6 +9,22 @@ The LLM planner is optional. It lets a user connect their own provider key, ask 
 - Trigger execution remains local and L2-depth based: BUY uses executable ask depth for the requested quantity; SELL uses executable bid depth for the requested quantity.
 - API keys can be read from environment variables or stored locally in `.quote-trade/llm-config.json`; environment variables are preferred. Codex OAuth does not use an OpenAI Platform API key; each Telegram user signs into their own ChatGPT/Codex session with `/codexconnect`.
 
+## Cumulative market depth
+
+Quote.Trade REST `/depth` levels are `[price, cumulative base quantity]`; public `/ws/liquidity` levels use `p` for price and `q` for cumulative base quantity. Each quantity is the total available through that price on that side. For BUY use asks; for SELL use bids. Select the first valid price level whose cumulative quantity covers the requested order size. Never sum these quantities across levels. If no level covers the size, there is insufficient quoted depth.
+
+For example, quantities `1` and `3` mean a total of `3`, not `4`: an order of `3` uses the second level, while an order of `3.5` has insufficient depth.
+
+## REST acknowledgement and WebSocket fills
+
+The REST order response is a snapshot of the order state at response time. An acknowledgement such as `NEW` with `executedQty=0` does not establish a final fill outcome. The authenticated `/ws/listenKey` stream continues to deliver `ORDER_TRADE_UPDATE` fill and status updates even after the REST response. Keep the subscription active, correlate updates by order ID and client order ID, and reconcile order/account state after reconnects or ambiguous timeouts before retrying.
+
+In private order events, `o.q` is the original order quantity, `o.l` is the last filled quantity, and `o.z` is the cumulative filled quantity for that order. Do not sum `o.z` across updates or add it to the REST `executedQty` snapshot; both describe cumulative execution. Public depth `q` describes available liquidity, not a fill.
+
+## FIX-compatible order and execution codes
+
+Order and execution response codes are designed to match FIX semantics. The private WebSocket uses FIX-style codes in `o.X` (OrdStatus) and `o.x` (ExecType); the REST order response can use status names such as `NEW` and `FILLED`. Decode each field according to its documented representation. HTTP status codes and negative application error codes are separate from FIX order/execution codes.
+
 ## Providers and default free fallback
 
 Supported presets: OpenAI/ChatGPT API, Codex OAuth for ChatGPT Pro/Codex accounts, Anthropic/Claude, xAI/Grok, OVHcloud AI Endpoints, Google Gemini, OpenRouter, GroqCloud, Hugging Face Inference Providers, Pollinations, and custom OpenAI-compatible gateways.

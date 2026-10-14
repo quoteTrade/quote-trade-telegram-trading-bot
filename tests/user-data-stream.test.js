@@ -51,9 +51,10 @@ class FakeSocket {
     return this;
   }
 
-  send(data) {
+  send(data, callback) {
     if (this.readyState === FakeSocket.CLOSED) throw new Error("send() on a closed socket");
     this.sent.push(data);
+    callback?.();
   }
 
   close(code, reason) {
@@ -116,6 +117,114 @@ after(() => {
 
 beforeEach(() => {
   sockets.length = 0;
+});
+
+describe("UserDataStreamService subscription readiness", () => {
+  function readyRig(t) {
+    const stream = new UserDataStreamService({ url: "ws://fixture.invalid", requestToken: "fixture-token" });
+    t.after(() => stream.stop());
+    assert.equal(stream.start(), true);
+    return { stream, ws: sockets.at(-1) };
+  }
+
+  function assertWaitersRemoved(stream) {
+    for (const event of ["ready", "error", "disconnected", "stopped"]) {
+      assert.equal(stream.listenerCount(event), 0, `${event} wait listener must be removed`);
+    }
+  }
+
+  it("waits for the subscription send callback rather than merely the open socket", async (t) => {
+    const { stream, ws } = readyRig(t);
+    let finishSend,
+      ready = false;
+    ws.send = (_frame, callback) => {
+      finishSend = callback;
+    };
+    const wait = stream.waitUntilReady().then(() => {
+      ready = true;
+    });
+    ws.open();
+    await Promise.resolve();
+    assert.equal(ready, false);
+    finishSend();
+    await wait;
+    assert.equal(ready, true);
+    await stream.waitUntilReady();
+    assertWaitersRemoved(stream);
+  });
+
+  it("rejects when the subscription cannot be sent", async (t) => {
+    const { stream, ws } = readyRig(t);
+    ws.send = (_frame, callback) => callback(new Error("send failed"));
+    const rejection = assert.rejects(stream.waitUntilReady(), /send failed/);
+    ws.open();
+    await rejection;
+    assertWaitersRemoved(stream);
+  });
+
+  for (const action of ["close", "stop", "error"]) {
+    it(`rejects a pending readiness wait on ${action} and removes its listeners`, async (t) => {
+      const { stream, ws } = readyRig(t);
+      const rejection = assert.rejects(stream.waitUntilReady(), /stopped|fixture failure/);
+      if (action === "close") ws.close();
+      if (action === "stop") stream.stop();
+      if (action === "error") ws.fire("error", new Error("fixture failure"));
+      await rejection;
+      assertWaitersRemoved(stream);
+    });
+  }
+
+  it("times out a connecting stream without leaving readiness listeners", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { stream } = readyRig(t);
+    const rejection = assert.rejects(stream.waitUntilReady(100), /readiness timed out/);
+    t.mock.timers.tick(100);
+    await rejection;
+    assertWaitersRemoved(stream);
+  });
+
+  it("requires a new subscription after reconnect instead of reusing old readiness", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { stream, ws } = readyRig(t);
+    ws.open();
+    await stream.waitUntilReady();
+    ws.close();
+    t.mock.timers.tick(1000);
+    const next = sockets.at(-1);
+    assert.notEqual(next, ws, "precondition: reconnect opened a new socket");
+    let ready = false;
+    const wait = stream.waitUntilReady().then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    assert.equal(ready, false);
+    next.open();
+    await wait;
+    assert.equal(ready, true);
+    assertWaitersRemoved(stream);
+  });
+
+  it("does not mark a stopped stream ready when an old send completes", async (t) => {
+    const { stream, ws } = readyRig(t);
+    let finishSend,
+      readyEvents = 0;
+    ws.send = (_frame, callback) => {
+      finishSend = callback;
+    };
+    stream.on("ready", () => {
+      readyEvents++;
+    });
+    ws.open();
+    stream.stop();
+    finishSend();
+    assert.equal(readyEvents, 0);
+    await assert.rejects(stream.waitUntilReady(), /not running/);
+    stream.start();
+    const next = sockets.at(-1);
+    next.open();
+    await stream.waitUntilReady();
+    assert.equal(readyEvents, 1, "positive control: the new subscription does become ready");
+  });
 });
 
 const URL = "wss://stream.test/user";
@@ -1011,7 +1120,17 @@ describe("PositionSyncService request", () => {
     assert.deepEqual(lines[0], ["[POSITIONS_REFRESH_TRY]", { path: "/positions" }]);
     assert.deepEqual(lines[1], [
       "[POSITIONS_REFRESH_RESPONSE]",
-      { path: "/positions", found: true, count: 1, isArray: true, topLevelKeys: ["0"] },
+      {
+        path: "/positions",
+        found: true,
+        count: 1,
+        isArray: true,
+        topLevelKeys: ["0"],
+        accountEnvelopeKeys: [],
+        hasAccountPositions: false,
+        accountPositionsIsArray: false,
+        accountPositionsCount: undefined,
+      },
     ]);
   });
 
@@ -1026,7 +1145,17 @@ describe("PositionSyncService request", () => {
 
     assert.deepEqual(lines[1], [
       "[POSITIONS_REFRESH_RESPONSE]",
-      { path: "/positions", found: false, count: 0, isArray: false, topLevelKeys: [] },
+      {
+        path: "/positions",
+        found: false,
+        count: 0,
+        isArray: false,
+        topLevelKeys: [],
+        accountEnvelopeKeys: [],
+        hasAccountPositions: false,
+        accountPositionsIsArray: false,
+        accountPositionsCount: undefined,
+      },
     ]);
   });
 });

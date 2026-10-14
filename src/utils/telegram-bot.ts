@@ -14,8 +14,50 @@ export interface TelegramSendMessageOptions {
   [key: string]: unknown;
 }
 
-type TextHandler = (msg: any, match: RegExpExecArray | null) => void;
-type EventHandler = (payload: any) => void;
+interface TelegramUser {
+  id?: string | number;
+  [key: string]: unknown;
+}
+
+interface TelegramChat {
+  id?: string | number;
+  type?: string;
+  [key: string]: unknown;
+}
+
+export interface TelegramMessage {
+  message_id?: number;
+  date?: number;
+  text?: string;
+  chat?: TelegramChat;
+  from?: TelegramUser;
+  [key: string]: unknown;
+}
+
+export interface TelegramCallbackQuery {
+  id?: string;
+  data?: string;
+  message?: TelegramMessage;
+  from?: TelegramUser;
+  [key: string]: unknown;
+}
+
+interface TelegramUpdate {
+  update_id?: number | string;
+  message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+  [key: string]: unknown;
+}
+
+interface TelegramErrorResponse {
+  status?: unknown;
+  data?: {
+    description?: unknown;
+  };
+}
+
+type TextHandler = (msg: TelegramMessage, match: RegExpExecArray | null) => void;
+type EventHandler = (payload: unknown) => void;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,6 +70,14 @@ function positiveMs(raw: unknown, fallback: number): number {
 
 function telegramIpFamily(): 4 | 6 {
   return String(process.env.TELEGRAM_IP_FAMILY ?? "4").trim() === "6" ? 6 : 4;
+}
+
+function asObject<T extends object>(value: unknown): Partial<T> {
+  return typeof value === "object" && value !== null ? (value as Partial<T>) : {};
+}
+
+function telegramErrorResponse(error: unknown): TelegramErrorResponse | undefined {
+  return asObject<{ response?: TelegramErrorResponse }>(error).response;
 }
 
 /**
@@ -63,15 +113,15 @@ export default class TelegramBot {
   }
 
   /** Route a trusted UI-generated command through the same handlers as Telegram text. */
-  dispatchText(msg: any, text: string): void {
+  dispatchText(msg: TelegramMessage, text: string): void {
     this.handleMessage({ ...msg, text });
   }
 
-  async sendMessage(chatId: string | number, text: string, options: TelegramSendMessageOptions = {}): Promise<any> {
+  async sendMessage(chatId: string | number, text: string, options: TelegramSendMessageOptions = {}): Promise<unknown> {
     return this.call("sendMessage", { chat_id: chatId, text, ...options });
   }
 
-  async answerCallbackQuery(callbackQueryId: string, options: Record<string, unknown> = {}): Promise<any> {
+  async answerCallbackQuery(callbackQueryId: string, options: Record<string, unknown> = {}): Promise<unknown> {
     return this.call(
       "answerCallbackQuery",
       { callback_query_id: callbackQueryId, ...options },
@@ -79,7 +129,7 @@ export default class TelegramBot {
     );
   }
 
-  async deleteMessage(chatId: string | number, messageId: string | number): Promise<any> {
+  async deleteMessage(chatId: string | number, messageId: string | number): Promise<unknown> {
     // Deleting a sensitive command is best-effort and must never hold up the
     // command itself for the full Telegram request timeout.
     return this.call("deleteMessage", { chat_id: chatId, message_id: messageId }, 3_000);
@@ -117,15 +167,16 @@ export default class TelegramBot {
     }
   }
 
-  private handleUpdate(update: any): void {
-    const updateId = Number(update?.update_id);
+  private handleUpdate(update: unknown): void {
+    const telegramUpdate = asObject<TelegramUpdate>(update);
+    const updateId = Number(telegramUpdate.update_id);
     if (Number.isFinite(updateId)) this.offset = Math.max(this.offset, updateId + 1);
 
-    if (update?.message) this.handleMessage(update.message);
-    if (update?.callback_query) this.emit("callback_query", update.callback_query);
+    if (telegramUpdate.message) this.handleMessage(telegramUpdate.message);
+    if (telegramUpdate.callback_query) this.emit("callback_query", telegramUpdate.callback_query);
   }
 
-  private handleMessage(msg: any): void {
+  private handleMessage(msg: TelegramMessage): void {
     const text = typeof msg?.text === "string" ? msg.text : "";
     if (!text) return;
     for (const { regex, handler } of this.textHandlers) {
@@ -135,11 +186,11 @@ export default class TelegramBot {
     }
   }
 
-  private emit(event: string, payload: any): void {
+  private emit(event: string, payload: unknown): void {
     for (const handler of this.eventHandlers.get(event) ?? []) handler(payload);
   }
 
-  private async call(method: string, payload: Record<string, unknown>, timeoutMs = 35_000): Promise<any> {
+  private async call(method: string, payload: Record<string, unknown>, timeoutMs = 35_000): Promise<unknown> {
     const startedAt = Date.now();
     let succeeded = false;
     try {
@@ -152,10 +203,11 @@ export default class TelegramBot {
       if (!response.data?.ok) throw new Error(response.data?.description ?? `Telegram API ${method} failed`);
       succeeded = true;
       return response.data.result;
-    } catch (error: any) {
-      const telegramDescription = error?.response?.data?.description;
+    } catch (error: unknown) {
+      const response = telegramErrorResponse(error);
+      const telegramDescription = response?.data?.description;
       if (telegramDescription) {
-        const status = error?.response?.status;
+        const status = response?.status;
         throw new Error(`Telegram API ${method}${status ? ` (${status})` : ""}: ${telegramDescription}`);
       }
       throw error;

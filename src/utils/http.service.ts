@@ -67,7 +67,7 @@ class HttpService {
 
   async get(path: string, config: HttpConfigWithCredentials = {}): Promise<any> {
     const safeConfig = sanitizeConfig(config);
-    const timeout = safeConfig.timeout ?? positiveMs(process.env.QUOTE_TRADE_GET_TIMEOUT_MS, 15_000);
+    const timeout = positiveMs(safeConfig.timeout, positiveMs(process.env.QUOTE_TRADE_GET_TIMEOUT_MS, 15_000));
     const startedAt = Date.now();
     try {
       const response = await axios.get(this.full(path), {
@@ -87,7 +87,7 @@ class HttpService {
   async post(path: string, body: any = {}, config: HttpConfigWithCredentials = {}): Promise<any> {
     const payload = JSON.stringify({ ...body, channel: body.channel ?? "LIQUIDITY" });
     const safeConfig = sanitizeConfig(config);
-    const timeout = safeConfig.timeout ?? positiveMs(process.env.QUOTE_TRADE_POST_TIMEOUT_MS, 35_000);
+    const timeout = positiveMs(safeConfig.timeout, positiveMs(process.env.QUOTE_TRADE_POST_TIMEOUT_MS, 35_000));
     const startedAt = Date.now();
     try {
       const response = await axios.post(this.full(path), JSON.parse(payload), {

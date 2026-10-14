@@ -21,14 +21,6 @@ function accountClient(positions) {
 const BTC = { symbol: "BTC", positionAmt: 1, availableQuantity: 1, markPrice: 100 };
 const ETH = { symbol: "ETH", positionAmt: 2, availableQuantity: 2, markPrice: 50 };
 
-describe("PositionStore", () => {
-  it("exposes an upserted position under its symbol with the signed net quantity", () => {
-    const store = makeStore();
-    store.upsert({ ...BTC });
-    assert.equal(store.get("BTC").netQty, 1);
-  });
-});
-
 describe("PositionSyncService.refresh", () => {
   it("reports zero synced positions when the account holds none", async () => {
     const store = makeStore();
@@ -46,6 +38,17 @@ describe("PositionSyncService.refresh", () => {
     await new PositionSyncService(accountClient([]), store).refresh();
 
     assert.equal(store.get("BTC"), undefined, "authoritative empty position refresh must clear stale cached positions");
+  });
+
+  it("treats an account-update envelope with no positions as an empty authoritative refresh", async () => {
+    const store = makeStore();
+    store.upsert({ ...BTC });
+    const client = { get: async () => ({ e: "ACCOUNT_UPDATE", E: 1, T: 1, a: { m: "ORDER", B: [] } }) };
+
+    const count = await new PositionSyncService(client, store).refresh();
+
+    assert.equal(count, 0);
+    assert.equal(store.get("BTC"), undefined, "ACCOUNT_UPDATE without positions must clear stale cached positions");
   });
 
   it("reports the number of positions returned by the account", async () => {

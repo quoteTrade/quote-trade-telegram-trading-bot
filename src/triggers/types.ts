@@ -137,6 +137,8 @@ export interface MarketTick {
   mark?: number;
   ts?: number;
   orderBook?: unknown;
+  /** Quote.Trade REST/WS snapshots are cumulative. Omitted preserves legacy per-level callers. */
+  depthQuantityMode?: "cumulative" | "per-level";
 }
 
 export interface SubmitOrderRequest {
@@ -150,8 +152,8 @@ export interface SubmitOrderRequest {
   account?: string;
   paymentCurrency?: string;
   reduceOnly?: boolean;
-  disableLeverage?: boolean;
-  /** Local id only. Do not add trigger metadata to the Quote.Trade API body. */
+  disableLeverage?: boolean | 0 | 1;
+  /** Client order identifier supported by /order; not a guarantee of idempotent retries. */
   clientOrderId?: string;
 }
 export interface SubmitOrderResult {
@@ -407,7 +409,8 @@ export function selectL2SideQuote(tick: MarketTick, side: OrderSide, quantity: n
   let cumulativeQuantity = 0;
 
   for (let i = 0; i < levels.length; i += 1) {
-    cumulativeQuantity += levels[i].quantity;
+    cumulativeQuantity =
+      tick.depthQuantityMode === "cumulative" ? levels[i].quantity : cumulativeQuantity + levels[i].quantity;
     if (cumulativeQuantity + 1e-12 >= requestedQuantity) {
       return {
         bookSide,
